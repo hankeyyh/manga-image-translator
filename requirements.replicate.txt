@@ -1,6 +1,8 @@
 networkx
 torch==2.5.1
 torchvision==0.20.1
+groq
+torch-summary
 einops
 numpy==1.26.4
 opencv-python
@@ -11,13 +13,25 @@ shapely
 requests
 tqdm
 aiohttp
+cryptography
+deepl
+ImageHash
 freetype-py
 kornia
+backports.cached-property
 huggingface_hub
 transformers
 sentencepiece
 ctranslate2
 safetensors
+tensorboardX
+websockets
+openai==1.63.0
+tiktoken
+httpx==0.27.2
+open_clip_torch
+pandas
+onnxruntime
 timm
 omegaconf
 python-dotenv
@@ -38,5 +52,12 @@ aiofiles
 aioshutil
 nest-asyncio
 cython
+accelerate
+bitsandbytes
+uvicorn
+fastapi
+python-multipart
+google-genai
+rich
 --extra-index-url https://frederik-uni.github.io/manga-image-translator-rust/python/wheels/simple/
 rusty-manga-image-translator
