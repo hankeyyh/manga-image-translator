@@ -1,0 +1,45 @@
+name: Cog Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Replicate model path (owner/name)"
+        required: true
+        default: "hankeyyh/my-manga-translator"
+  push:
+    branches: [ "main" ]
+    paths:
+      - "cog.yaml"
+      - "predict.py"
+      - "requirements.replicate.txt"
+      - "replicate/**"
+      - "manga_translator/**"
+
+jobs:
+  push:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cog
+        run: |
+          sudo curl -o /usr/local/bin/cog -L "https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)"
+          sudo chmod +x /usr/local/bin/cog
+          cog --version
+
+      - name: Login to Replicate
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          echo "${REPLICATE_API_TOKEN}" | cog login --token-stdin
+
+      - name: Cog push
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+          MODEL: ${{ github.event.inputs.model || 'hankeyyh/my-manga-translator' }}
+        run: |
+          cog push "r8.im/${MODEL}"

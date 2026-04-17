@@ -1,0 +1,20 @@
+# Replicate V1 runtime baseline:
+# - 推荐硬件: NVIDIA L4 (24GB 显存)
+# - 备选硬件: NVIDIA T4 (16GB 显存, 更慢但成本更低)
+# - 模型目录: /src/models
+build:
+  gpu: true
+  python_version: "3.10"
+  torch_version: "2.5.1"
+  python_requirements: "requirements.replicate.txt"
+  run:
+    - "python -m replicate.prefetch_models"
+  system_packages:
+    - "ffmpeg"
+    - "libgl1"
+    - "libglib2.0-0"
+    - "libsm6"
+    - "libxext6"
+    - "libxrender1"
+
+predict: "predict.py:Predictor"

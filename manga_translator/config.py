@@ -151,6 +151,12 @@ class Upscaler(str, Enum):
     esrgan = "esrgan"
     upscler4xultrasharp = "4xultrasharp"
 
+# Replicate V1 frozen scope: keep default model chain stable.
+V1_DEFAULT_DETECTOR = Detector.default
+V1_DEFAULT_OCR = Ocr.ocr48px
+V1_DEFAULT_INPAINTER = Inpainter.lama_large
+V1_DEFAULT_TRANSLATOR = Translator.sugoi
+
 class RenderConfig(BaseModel):
     renderer: Renderer = Renderer.default
     """Render english text translated from manga with some additional typesetting. Ignores some other argument options"""
@@ -215,7 +221,7 @@ class UpscaleConfig(BaseModel):
     """Image upscale ratio applied before detection. Can improve text detection."""
 
 class TranslatorConfig(BaseModel):
-    translator: Translator = Translator.sugoi
+    translator: Translator = V1_DEFAULT_TRANSLATOR
     """Language translator to use"""
     target_lang: str = 'ENG' #todo: validate VALID_LANGUAGES #todo: convert to enum
     """Destination language"""
@@ -269,7 +275,7 @@ class TranslatorConfig(BaseModel):
 
 class DetectorConfig(BaseModel):
     """"""
-    detector: Detector =Detector.default
+    detector: Detector = V1_DEFAULT_DETECTOR
     """"Text detector used for creating a text mask from an image, DO NOT use craft for manga, it\'s not designed for it"""
     detection_size: int = 2048
     """Size of image used for detection"""
@@ -289,7 +295,7 @@ class DetectorConfig(BaseModel):
     """How much to extend text skeleton to form bounding box"""
 
 class InpainterConfig(BaseModel):
-    inpainter: Inpainter = Inpainter.lama_large
+    inpainter: Inpainter = V1_DEFAULT_INPAINTER
     """Inpainting model to use"""
     inpainting_size: int = 2048
     """Size of image used for inpainting (too large will result in OOM)"""
@@ -307,7 +313,7 @@ class ColorizerConfig(BaseModel):
 class OcrConfig(BaseModel):
     use_mocr_merge: bool = False
     """Use bbox merge when Manga OCR inference."""
-    ocr: Ocr = Ocr.ocr48px
+    ocr: Ocr = V1_DEFAULT_OCR
     """Optical character recognition (OCR) model to use"""
     min_text_length: int = 0
     """Minimum text length of a text region"""
