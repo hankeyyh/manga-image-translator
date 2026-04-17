@@ -9,7 +9,15 @@ from manga_translator import Config
 
 NotifyType = Optional[Callable[[int, Optional[bytes]], None]]
 
-async def fetch_data_stream(url, image: Image, config: Config, sender: NotifyType, headers: Mapping[str, str] = {}):
+async def fetch_data_stream(
+    url,
+    image: Image,
+    config: Config,
+    sender: NotifyType,
+    headers: Optional[Mapping[str, str]] = None,
+):
+    if headers is None:
+        headers = {}
     attributes = {"image": image, "config": config}
     data = pickle.dumps(attributes)
 
@@ -20,7 +28,9 @@ async def fetch_data_stream(url, image: Image, config: Config, sender: NotifyTyp
             else:
                 raise HTTPException(response.status, detail=await response.text())
 
-async def fetch_data(url, image: Image, config: Config, headers: Mapping[str, str] = {}):
+async def fetch_data(url, image: Image, config: Config, headers: Optional[Mapping[str, str]] = None):
+    if headers is None:
+        headers = {}
     attributes = {"image": image, "config": config}
     data = pickle.dumps(attributes)
 

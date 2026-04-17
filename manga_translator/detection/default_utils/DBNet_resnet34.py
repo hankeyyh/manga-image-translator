@@ -5,7 +5,10 @@ import torch.nn.functional as F
 
 from torchvision.models import resnet34
 
-from . import DBHead
+try:
+    from . import DBHead
+except ImportError:
+    import DBHead
 import einops
 
 class ImageMultiheadSelfAttention(nn.Module):
@@ -125,10 +128,10 @@ class TextDetection(nn.Module):
         return self.conv_db(up8), self.conv_mask(up4)
 
 if __name__ == '__main__':
-    net = TextDetection().cuda()
-    img = torch.randn(2, 3, 1536, 1536).cuda()
+    net = TextDetection().cpu()
+    img = torch.randn(2, 3, 1536, 1536).cpu()
     db, seg = net(img)
-    target = torch.randn(2, 3, 1536, 1536).cuda()
+    target = torch.randn(2, 3, 1536, 1536).cpu()
     F.l1_loss(db, target).backward()
     print(db.shape)
     print(seg.shape)
