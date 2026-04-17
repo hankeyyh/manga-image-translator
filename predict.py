@@ -5,6 +5,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Keep stdout clean for `cog openapi_schema` JSON parsing.
+# Any ANSI escape sequence in import-time logs can break schema decoding.
+os.environ.setdefault("NO_COLOR", "1")
+os.environ.setdefault("COG_NO_COLOR", "1")
+os.environ.setdefault("CLICOLOR", "0")
+os.environ.setdefault("PY_COLORS", "0")
+
 from cog import BasePredictor, Input, Path as CogPath
 from PIL import Image
 
