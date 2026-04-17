@@ -7,9 +7,14 @@ import functools
 import logging
 from pathlib import Path
 from typing import Tuple, Optional, List
-from hyphen import Hyphenator
-from hyphen.dictools import LANGUAGES as HYPHENATOR_LANGUAGES
 from langcodes import standardize_tag
+
+try:
+    from hyphen import Hyphenator
+    from hyphen.dictools import LANGUAGES as HYPHENATOR_LANGUAGES
+except Exception:
+    Hyphenator = None
+    HYPHENATOR_LANGUAGES = []
 
 from ..utils import BASE_PATH, is_punctuation
 
@@ -580,6 +585,8 @@ def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tup
     return line_box[y:y+h, x:x+w]
 
 def select_hyphenator(lang: str):
+    if Hyphenator is None:
+        return None
     lang = standardize_tag(lang)
     if lang not in HYPHENATOR_LANGUAGES:
         for avail_lang in reversed(HYPHENATOR_LANGUAGES):
