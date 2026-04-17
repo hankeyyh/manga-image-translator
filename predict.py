@@ -19,6 +19,7 @@ from manga_translator.config import (
     V1_DEFAULT_OCR,
     V1_DEFAULT_TRANSLATOR,
 )
+from replicate.prefetch_models import main as prefetch_models_main
 
 
 MODEL_DIR = os.getenv(
@@ -35,6 +36,10 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
+        if _to_bool(os.getenv("REPLICATE_PREFETCH_ON_SETUP"), default=True):
+            # Cog build stage cannot import project modules; prefetch at runtime setup instead.
+            asyncio.run(prefetch_models_main())
+
         self.translator = MangaTranslator(
             {
                 "use_gpu": True,
