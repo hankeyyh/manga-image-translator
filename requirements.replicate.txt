@@ -29,6 +29,7 @@ editdistance
 py3langid==0.2.2
 langcodes[data]
 langdetect
+manga_ocr
 python-bidi
 arabic-reshaper
 pyhyphen
