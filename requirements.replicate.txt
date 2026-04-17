@@ -37,4 +37,3 @@ aiofiles
 aioshutil
 nest-asyncio
 cython
-pydensecrf@https://github.com/lucasb-eyer/pydensecrf/archive/refs/heads/master.zip
