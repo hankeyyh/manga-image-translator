@@ -2,7 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from manga_translator import Config
+from manga_translator.config import Config
 from manga_translator.detection import prepare as prepare_detection
 from manga_translator.inpainting import prepare as prepare_inpainting
 from manga_translator.ocr import prepare as prepare_ocr
