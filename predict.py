@@ -47,7 +47,7 @@ class Predictor(BasePredictor):
         from manga_translator.manga_translator import MangaTranslator
         from replicate.prefetch_models import main as prefetch_models_main
 
-        if _to_bool(os.getenv("REPLICATE_PREFETCH_ON_SETUP"), default=True):
+        if _to_bool(os.getenv("REPLICATE_PREFETCH_ON_SETUP"), default=False):
             # Cog build stage cannot import project modules; prefetch at runtime setup instead.
             asyncio.run(prefetch_models_main())
 
