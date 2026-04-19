@@ -13,4 +13,20 @@ _NO_COLOR = (
 colorama.init(autoreset=not _NO_COLOR, strip=_NO_COLOR)
 load_dotenv()
 
-from .manga_translator import *
+# Do not `from .manga_translator import *` here: that eagerly loads the full pipeline
+# (detection/ocr/inpainting/...) and breaks tools that import lightweight submodules
+# or need clean stdout (e.g. `cog openapi-schema` JSON parsing).
+
+
+def __getattr__(name: str):
+    """Lazy re-exports from `manga_translator.manga_translator` for backward compatibility."""
+    if name.startswith("_"):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import manga_translator as _mt
+
+    try:
+        return getattr(_mt, name)
+    except AttributeError as e:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from e
+
+

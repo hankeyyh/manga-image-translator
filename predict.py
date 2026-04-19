@@ -15,8 +15,10 @@ os.environ.setdefault("PY_COLORS", "0")
 from cog import BasePredictor, Input, Path as CogPath
 from PIL import Image
 
-from manga_translator import Config, MangaTranslator
+# Import only `config` (lightweight). Do not `from manga_translator import MangaTranslator`:
+# that would trigger lazy `__getattr__` and load the full pipeline during `cog openapi-schema`.
 from manga_translator.config import (
+    Config,
     Detector,
     Inpainter,
     Ocr,
@@ -26,7 +28,6 @@ from manga_translator.config import (
     V1_DEFAULT_OCR,
     V1_DEFAULT_TRANSLATOR,
 )
-from replicate.prefetch_models import main as prefetch_models_main
 
 
 MODEL_DIR = os.getenv(
@@ -43,6 +44,9 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
+        from manga_translator.manga_translator import MangaTranslator
+        from replicate.prefetch_models import main as prefetch_models_main
+
         if _to_bool(os.getenv("REPLICATE_PREFETCH_ON_SETUP"), default=True):
             # Cog build stage cannot import project modules; prefetch at runtime setup instead.
             asyncio.run(prefetch_models_main())
