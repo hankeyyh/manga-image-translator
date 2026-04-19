@@ -6,7 +6,6 @@ import string
 from typing import List, Dict
 from rich.console import Console  
 from rich.panel import Panel
-from .. import manga_translator
 from .config_gpt import ConfigGPT
 from .common import CommonTranslator, MissingAPIKeyException, VALID_LANGUAGES
 from .keys import OPENAI_API_KEY, OPENAI_HTTP_PROXY, OPENAI_API_BASE, OPENAI_MODEL, OPENAI_GLOSSARY_PATH
@@ -15,6 +14,13 @@ try:
     import openai
 except ImportError:
     openai = None
+
+
+def _main_module():
+    """Lazy import: avoid circular import with `manga_translator.manga_translator` ↔ `translators`."""
+    from .. import manga_translator as _mt
+
+    return _mt
 
 
 class OpenAITranslator(ConfigGPT, CommonTranslator):
@@ -72,9 +78,10 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
                 self.logger.warning(f"The glossary file does not exist: {self.dict_path}")
                 OpenAITranslator._glossary_warning_shown = True
 
-        # 添加 rich 的 Console 对象  
-        if hasattr(manga_translator, '_global_console') and manga_translator._global_console:
-            self.console = manga_translator._global_console
+        # 添加 rich 的 Console 对象
+        _mt = _main_module()
+        if hasattr(_mt, "_global_console") and _mt._global_console:
+            self.console = _mt._global_console
         else:
             self.console = Console()  
         self.prev_context = ""
@@ -821,11 +828,12 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
         
         # 同时输出到日志文件（纯文本格式）
         
-        if hasattr(manga_translator, '_log_console') and manga_translator._log_console:
+        _mt = _main_module()
+        if hasattr(_mt, "_log_console") and _mt._log_console:
             # 直接输出纯文本，不使用边框
-            manga_translator._log_console.print(f"=== {title} ===")
-            manga_translator._log_console.print(fixed_text)
-            manga_translator._log_console.print("=" * (len(title) + 8))
+            _mt._log_console.print(f"=== {title} ===")
+            _mt._log_console.print(fixed_text)
+            _mt._log_console.print("=" * (len(title) + 8))
 
     # ==============以下是术语表相关函数 (Below are glossary-related functions)==============
     

@@ -1,3 +1,4 @@
+import importlib
 import colorama
 import os
 import sys
@@ -22,8 +23,12 @@ def __getattr__(name: str):
     """Lazy re-exports from `manga_translator.manga_translator` for backward compatibility."""
     if name.startswith("_"):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from . import manga_translator as _mt
-
+    # Must use importlib: `from . import manga_translator` inside __getattr__ would look up the
+    # attribute `manga_translator` on this package and recurse forever (e.g. translators/chatgpt.py:
+    # `from .. import manga_translator`).
+    _mt = importlib.import_module(f"{__name__}.manga_translator")
+    if name == "manga_translator":
+        return _mt
     try:
         return getattr(_mt, name)
     except AttributeError as e:
