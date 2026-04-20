@@ -152,7 +152,7 @@ class Upscaler(str, Enum):
     upscler4xultrasharp = "4xultrasharp"
 
 # Replicate V1 frozen scope: keep default model chain stable.
-V1_DEFAULT_DETECTOR = Detector.default
+V1_DEFAULT_DETECTOR = Detector.ctd
 V1_DEFAULT_OCR = Ocr.ocr48px
 V1_DEFAULT_INPAINTER = Inpainter.lama_large
 V1_DEFAULT_TRANSLATOR = Translator.sugoi

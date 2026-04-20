@@ -15,4 +15,8 @@ build:
     - "libxext6"
     - "libxrender1"
 
+  run:
+    - "mkdir -p /src/models"
+    - "MANGA_TRANSLATOR_MODEL_DIR=/src/models python -m replicate.prefetch_models"
+
 predict: "predict.py:Predictor"
