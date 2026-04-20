@@ -154,8 +154,8 @@ class Upscaler(str, Enum):
 # Replicate V1 frozen scope: keep default model chain stable.
 V1_DEFAULT_DETECTOR = Detector.ctd
 V1_DEFAULT_OCR = Ocr.ocr48px
-V1_DEFAULT_INPAINTER = Inpainter.lama_large
-V1_DEFAULT_TRANSLATOR = Translator.sugoi
+V1_DEFAULT_INPAINTER = Inpainter.lama_mpe
+V1_DEFAULT_TRANSLATOR = Translator.youdao
 
 class RenderConfig(BaseModel):
     renderer: Renderer = Renderer.default

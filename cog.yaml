@@ -9,6 +9,8 @@ build:
   python_requirements: "requirements.replicate.txt"
   system_packages:
     - "ffmpeg"
+    - "wget"
+    - "unzip"
     - "libgl1"
     - "libglib2.0-0"
     - "libsm6"
@@ -16,7 +18,10 @@ build:
     - "libxrender1"
 
   run:
-    - "mkdir -p /src/models"
-    - "cd /src && PYTHONPATH=/src MANGA_TRANSLATOR_MODEL_DIR=/src/models python -m replicate.prefetch_models"
-
+    - "mkdir -p /src/models/detection /src/models/inpainting /src/models/ocr"
+    - "wget -nv -O /src/models/detection/comictextdetector.pt https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt"
+    - "wget -nv -O /src/models/detection/comictextdetector.pt.onnx https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx"
+    - "wget -nv -O /src/models/inpainting/inpainting_lama_mpe.ckpt https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting_lama_mpe.ckpt"
+    - "wget -nv -O /src/models/ocr/ocr_ar_48px.ckpt https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/ocr_ar_48px.ckpt"
+    - "wget -nv -O /src/models/ocr/alphabet-all-v7.txt https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/alphabet-all-v7.txt"
 predict: "predict.py:Predictor"

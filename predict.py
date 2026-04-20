@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,24 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+@contextmanager
+def _temporary_env(updates: dict[str, str | None]):
+    old_values = {k: os.environ.get(k) for k in updates}
+    try:
+        for k, v in updates.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, old in old_values.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+
 class Predictor(BasePredictor):
     def setup(self) -> None:
         from manga_translator.manga_translator import MangaTranslator
@@ -71,6 +90,14 @@ class Predictor(BasePredictor):
         ocr: str = Input(default=V1_DEFAULT_OCR.value),
         inpainter: str = Input(default=V1_DEFAULT_INPAINTER.value),
         translator: str = Input(default=V1_DEFAULT_TRANSLATOR.value),
+        youdao_app_key: str | None = Input(
+            description="Youdao app key (required when translator=youdao)",
+            default=None,
+        ),
+        youdao_secret_key: str | None = Input(
+            description="Youdao secret key (required when translator=youdao)",
+            default=None,
+        ),
     ) -> CogPath:
         config = Config()
         config.translator.target_lang = target_lang.upper()
@@ -79,10 +106,25 @@ class Predictor(BasePredictor):
         config.inpainter.inpainter = Inpainter(inpainter)
         config.translator.translator = Translator(translator)
 
+        if config.translator.translator == Translator.youdao:
+            app_key = youdao_app_key or os.getenv("YOUDAO_APP_KEY")
+            secret_key = youdao_secret_key or os.getenv("YOUDAO_SECRET_KEY")
+            if not app_key or not secret_key:
+                raise ValueError(
+                    "translator=youdao requires both youdao_app_key and youdao_secret_key "
+                    "(or pre-set YOUDAO_APP_KEY/YOUDAO_SECRET_KEY env vars)."
+                )
+
         started_at = time.perf_counter()
         with Image.open(str(image)) as input_image:
             img = input_image.convert("RGB")
-        ctx = asyncio.run(self.translator.translate(img, config))
+        with _temporary_env(
+            {
+                "YOUDAO_APP_KEY": youdao_app_key or os.getenv("YOUDAO_APP_KEY"),
+                "YOUDAO_SECRET_KEY": youdao_secret_key or os.getenv("YOUDAO_SECRET_KEY"),
+            }
+        ):
+            ctx = asyncio.run(self.translator.translate(img, config))
         elapsed = time.perf_counter() - started_at
 
         metrics: dict[str, Any] = getattr(ctx, "metrics", {}) or {}
