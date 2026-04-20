@@ -1,5 +1,6 @@
 
 # -*- coding: utf-8 -*-
+import os
 import uuid
 import hashlib
 import time
@@ -7,7 +8,6 @@ import aiohttp
 import time
 
 from .common import CommonTranslator, InvalidServerResponse, MissingAPIKeyException
-from .keys import YOUDAO_APP_KEY, YOUDAO_SECRET_KEY
 
 def sha256_encode(signStr):
     hash_algorithm = hashlib.sha256()
@@ -40,10 +40,15 @@ class YoudaoTranslator(CommonTranslator):
 
     def __init__(self):
         super().__init__()
-        if not YOUDAO_APP_KEY or not YOUDAO_SECRET_KEY:
+        if not self.get_youdao_keys() or not self.get_youdao_secret_key():
             raise MissingAPIKeyException('Please set the YOUDAO_APP_KEY and YOUDAO_SECRET_KEY environment variables before using the youdao translator.')
 
     async def _translate(self, from_lang, to_lang, queries):
+        youdao_app_key = self.get_youdao_keys()
+        youdao_secret_key = self.get_youdao_secret_key()
+        if not youdao_app_key or not youdao_secret_key:
+            raise MissingAPIKeyException('Please set the YOUDAO_APP_KEY and YOUDAO_SECRET_KEY environment variables before using the youdao translator.')
+
         data = {}
         query_text = '\n'.join(queries)
         data['from'] = from_lang
@@ -52,9 +57,9 @@ class YoudaoTranslator(CommonTranslator):
         curtime = str(int(time.time()))
         data['curtime'] = curtime
         salt = str(uuid.uuid1())
-        signStr = YOUDAO_APP_KEY + self._truncate(query_text) + salt + curtime + YOUDAO_SECRET_KEY
+        signStr = youdao_app_key + self._truncate(query_text) + salt + curtime + youdao_secret_key
         sign = sha256_encode(signStr)
-        data['appKey'] = YOUDAO_APP_KEY
+        data['appKey'] = youdao_app_key
         data['q'] = query_text
         data['salt'] = salt
         data['sign'] = sign
@@ -79,3 +84,11 @@ class YoudaoTranslator(CommonTranslator):
         async with aiohttp.ClientSession() as session:
             async with session.post(self._API_URL, data=data, headers=headers) as resp:
                 return await resp.json()
+
+    def get_youdao_keys(self):
+        # predict 时作为参数传入，再写入env，从env读取保证读到最新值
+        return os.getenv('YOUDAO_APP_KEY') 
+
+    def get_youdao_secret_key(self):
+        # predict 时作为参数传入，再写入env，从env读取保证读到最新值
+        return os.getenv('YOUDAO_SECRET_KEY') 
