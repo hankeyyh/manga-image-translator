@@ -612,7 +612,7 @@ class MangaTranslator:
         await self._report_progress('rendering')
 
         # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
+        if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析
             await self._report_progress(f'rendering_folder:{folder_name}')
@@ -2630,7 +2630,7 @@ class MangaTranslator:
         await self._report_progress('rendering')
 
         # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
+        if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析
             await self._report_progress(f'rendering_folder:{folder_name}')
