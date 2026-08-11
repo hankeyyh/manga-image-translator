@@ -21,7 +21,7 @@ LANGUAGE_ORIENTATION_PRESETS = {
     'DEU': 'h',
     'HUN': 'h',
     'ITA': 'h',
-    'JPN': 'auto',
+    'JPN': 'v',
     'KOR': 'h',
     'POL': 'h',
     'PTB': 'h',
