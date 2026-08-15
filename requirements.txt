@@ -1,5 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
 networkx
-torch
+torch>=2.6.0
 groq
 torchvision
 torch-summary
@@ -61,3 +62,4 @@ regex
 --extra-index-url https://frederik-uni.github.io/manga-image-translator-rust/python/wheels/simple/
 rusty-manga-image-translator
 python-bidi
+supabase

@@ -20,7 +20,7 @@ from pathlib import Path
 from manga_translator import Config
 from server.instance import ExecutorInstance, executor_instances
 from server.myqueue import task_queue
-from server.request_extraction import get_ctx, while_streaming, TranslateRequest, BatchTranslateRequest, get_batch_ctx
+from server.request_extraction import get_ctx, while_batch_streaming, while_streaming, TranslateRequest, BatchTranslateRequest, get_batch_ctx
 from server.to_json import to_translation, TranslationResponse
 
 app = FastAPI()
@@ -49,6 +49,7 @@ async def register_instance(instance: ExecutorInstance, req: Request, req_nonce:
     instance.ip = req.client.host
     executor_instances.register(instance)
 
+# ctx 是子进程返回的, 详细结构见to_json.py
 def transform_to_image(ctx):
     # 检查是否使用占位符（在web模式下final.png保存后会设置此标记）
     if hasattr(ctx, 'use_placeholder') and ctx.use_placeholder:
@@ -61,6 +62,18 @@ def transform_to_image(ctx):
     img_byte_arr = io.BytesIO()
     ctx.result.save(img_byte_arr, format="PNG")
     return img_byte_arr.getvalue()
+
+def transform_batch_to_image(ctx):
+    # 批量 stream 优先返回占位图；非占位符时回退为完整图片
+    if hasattr(ctx, 'use_placeholder') and ctx.use_placeholder:
+        img_byte_arr = io.BytesIO()
+        ctx.result.save(img_byte_arr, format="PNG")
+        return img_byte_arr.getvalue()
+
+    img_byte_arr = io.BytesIO()
+    ctx.result.save(img_byte_arr, format="PNG")
+    return img_byte_arr.getvalue()
+
 
 def transform_to_json(ctx):
     return to_translation(ctx).model_dump_json().encode("utf-8")
@@ -154,7 +167,7 @@ async def stream_image_form_web(req: Request, image: UploadFile = File(...), con
     """Web前端专用端点：使用占位符优化，提供极速体验"""
     img = await image.read()
     conf = Config.parse_raw(config)
-    # 标记为Web前端优化模式，使用占位符优化
+    # 标记为Web前端优化模式，使用占位符优化，结果会保存为final.png
     conf._web_frontend_optimized = True
     return await while_streaming(req, transform_to_image, conf, img)
 
@@ -224,6 +237,31 @@ async def batch_images(req: Request, data: BatchTranslateRequest):
             headers={"Content-Disposition": "attachment; filename=translated_images.zip"}
         )
 
+# stream response:
+# status=0 接口执行完毕后，每张图片发一次; 
+# status=1 过程数据; 
+# - image_completed:{image_identifier}:{output_path} 保存成功
+# - image_failed:{image_identifier}:{errMsg} 翻译过程遇到失败
+# status=2 整体异常报错; 
+# status=3 排队中; 
+# status=4 即将开始; 
+# status=5 批量接口执行完毕
+@app.post("/translate/batch/image/stream/web", response_description="uses placeholder optimization for faster response.", tags=["api", "batch"])
+async def batch_stream_image_form_web(req: Request, images: list[UploadFile] = File(...), config: str = Form("{}")):
+    conf = Config.parse_raw(config)
+    # 标记为Web前端优化模式，使用占位符优化，结果会直接保存
+    conf._web_frontend_optimized = True   
+    # 保存路径和图片数量对不上，返回错误
+    if conf.save.save_to == "supabase_storage" and len(images) != len(conf.save.supabase_storage_paths):
+        raise HTTPException(400, detail="supabase_storage_paths length should equal to images length")
+    # 图片标识和图片数量对不上，返回错误
+    if len(images) != len(conf.image_identifiers):
+        raise HTTPException(400, detail="image length should equal to image_identifiers")
+    
+    imgs = [await image.read() for image in images]
+
+    return await while_batch_streaming(req, transform_batch_to_image, conf, imgs)
+
 @app.get("/", response_class=HTMLResponse,tags=["ui"])
 async def index() -> HTMLResponse:
     script_directory = Path(__file__).parent
@@ -256,6 +294,8 @@ def start_translator_client_proc(host: str, port: int, nonce: str, params: Names
         cmds.append('--use-gpu-limited')
     if params.ignore_errors:
         cmds.append('--ignore-errors')
+    if params.notify_progress_fail:
+        cmds.append('--notify-progress-fail')
     if params.verbose:
         cmds.append('--verbose')
     if params.models_ttl:
@@ -284,6 +324,9 @@ def prepare(args):
         nonce = os.getenv('MT_WEB_NONCE', generate_nonce())
     else:
         nonce = args.nonce
+    # Ensure child process and internal HTTP callers share the same nonce.
+    if nonce is not None:
+        os.environ['MT_WEB_NONCE'] = nonce
     if args.start_instance:
         return start_translator_client_proc(args.host, args.port + 1, nonce, args)
     folder_name= "upload-cache"

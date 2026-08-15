@@ -14,7 +14,7 @@ from PIL import Image
 from typing import Optional, Any, List
 import py3langid as langid
 
-from .config import Config, Colorizer, Detector, Translator, Renderer, Inpainter
+from .config import Config, Colorizer, Detector, SaveConfig, SavePlace, Translator, Renderer, Inpainter, Ocr
 from .utils import (
     BASE_PATH,
     LANGUAGE_ORIENTATION_PRESETS,
@@ -30,7 +30,7 @@ from .utils import (
 from .detection import dispatch as dispatch_detection, prepare as prepare_detection, unload as unload_detection
 from .upscaling import dispatch as dispatch_upscaling, prepare as prepare_upscaling, unload as unload_upscaling
 from .ocr import dispatch as dispatch_ocr, prepare as prepare_ocr, unload as unload_ocr
-from .textline_merge import dispatch as dispatch_textline_merge
+from .textline_merge import dispatch as dispatch_textline_merge, dispatch_mocr_merged
 from .mask_refinement import dispatch as dispatch_mask_refinement
 from .inpainting import dispatch as dispatch_inpainting, prepare as prepare_inpainting, unload as unload_inpainting
 from .translators import (
@@ -41,6 +41,7 @@ from .translators import (
 from .translators.common import ISO_639_1_TO_VALID_LANGUAGES
 from .colorization import dispatch as dispatch_colorization, prepare as prepare_colorization, unload as unload_colorization
 from .rendering import dispatch as dispatch_rendering, dispatch_eng_render, dispatch_eng_render_pillow
+from .utils.supabase import create_service_role_client, upload_file
 
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
 logger = logging.getLogger('manga_translator')
@@ -95,6 +96,7 @@ def apply_dictionary(text, dictionary):
 class MangaTranslator:
     verbose: bool
     ignore_errors: bool
+    notify_progress_fail: bool
     _gpu_limited_memory: bool
     device: Optional[str]
     kernel_size: Optional[int]
@@ -112,6 +114,7 @@ class MangaTranslator:
         self.device = None
         self._gpu_limited_memory = False
         self.ignore_errors = False
+        self.notify_progress_fail = False
         self.verbose = False
         self.models_ttl = 0
         self.batch_size = 1  # 默认不批量处理
@@ -285,6 +288,7 @@ class MangaTranslator:
             self.batch_concurrent = False
             
         self.ignore_errors = params.get('ignore_errors', False)
+        self.notify_progress_fail = params.get('notify_progress_fail', False)
         # check mps for apple silicon or cuda for nvidia
         device = 'mps' if torch.backends.mps.is_available() else 'cuda'
         self.device = device if params.get('use_gpu', False) else 'cpu'
@@ -417,6 +421,7 @@ class MangaTranslator:
         # 在翻译流程的最后保存翻译结果，确保保存的是最终结果（包括重试后的结果）
         # Save translation results at the end of translation process to ensure final results are saved
         if not skip_context_save and ctx.text_regions:
+            await self._report_progress('saving_context')
             # 汇总本页翻译，供下一页做上文
             page_translations = {r.text_raw if hasattr(r, "text_raw") else r.text: r.translation
                                  for r in ctx.text_regions}
@@ -429,6 +434,7 @@ class MangaTranslator:
 
         return ctx
 
+    # 翻译的所有信息保存在ctx，函数最终返回ctx
     async def _translate(self, config: Config, ctx: Context) -> Context:
         # Start the background cleanup job once if not already started.
         if self._detector_cleanup_task is None:
@@ -450,6 +456,7 @@ class MangaTranslator:
         # -- Upscaling
         # The default text detector doesn't work very well on smaller images, might want to
         # consider adding automatic upscaling on certain kinds of small images.
+        # 调用 models/xxx 可执行文件，输入模糊图片，输出高清图
         if config.upscale.upscale_ratio:
             await self._report_progress('upscaling')
             try:
@@ -542,6 +549,7 @@ class MangaTranslator:
         # -- Translation
         await self._report_progress('translating')
         try:
+            # 填充text_region.translation 译文
             ctx.text_regions = await self._run_text_translation(config, ctx)
         except Exception as e:  
             logger.error(f"Error during translating:\n{traceback.format_exc()}")  
@@ -581,6 +589,7 @@ class MangaTranslator:
         # -- Inpainting
         await self._report_progress('inpainting')
         try:
+            # 实际逻辑在inpainter._infer，返回图片，待翻译填充的区域被处理成和周围背景衔接的像素
             ctx.img_inpainted = await self._run_inpainting(config, ctx)
         except Exception as e:  
             logger.error(f"Error during inpainting:\n{traceback.format_exc()}")  
@@ -603,7 +612,7 @@ class MangaTranslator:
         await self._report_progress('rendering')
 
         # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
+        if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析
             await self._report_progress(f'rendering_folder:{folder_name}')
@@ -617,8 +626,10 @@ class MangaTranslator:
             ctx.img_rendered = ctx.img_inpainted # Fallback to inpainted (or original RGB) image if rendering fails
 
         await self._report_progress('finished', True)
+        # 把numpy结果数组，渲染到img pil画布上
         ctx.result = dump_image(ctx.input, ctx.img_rendered, ctx.img_alpha)
 
+        # 如果流式输出，把ctx.result保存为final.png
         return await self._revert_upscale(config, ctx)
     
     # If `revert_upscaling` is True, revert to input size
@@ -630,6 +641,7 @@ class MangaTranslator:
 
         # 在verbose模式下保存final.png到调试文件夹
         if ctx.result and self.verbose:
+            await self._report_progress('saving_debug')
             try:
                 final_img = np.array(ctx.result)
                 if len(final_img.shape) == 3:  # 彩色图片，转换BGR顺序
@@ -644,16 +656,16 @@ class MangaTranslator:
 
         # Web流式模式优化：保存final.png并使用占位符
         if ctx.result and not self.result_sub_folder and hasattr(self, '_is_streaming_mode') and self._is_streaming_mode:
-            # 保存final.png文件
+            await self._report_progress('saving_result')
             final_img = np.array(ctx.result)
             if len(final_img.shape) == 3:  # 彩色图片，转换BGR顺序
                 final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(self._result_path('final.png'), final_img)
 
-            # 通知前端文件已就绪
-            if hasattr(self, '_progress_hooks') and self._current_image_context:
-                folder_name = self._current_image_context['subfolder']
-                await self._report_progress(f'final_ready:{folder_name}')
+            # 根据config决定保存本地 or supabase storage
+            if config.save.save_to == SavePlace.supabase_storage:
+                await self._save_streaming_result_to_supabase(final_img, config)
+            elif config.save.save_to == SavePlace.local:
+                await self._save_streaming_result_locally(final_img, config)
 
             # 创建占位符结果并立即返回
             from PIL import Image
@@ -663,6 +675,35 @@ class MangaTranslator:
             return ctx
 
         return ctx
+
+    async def _save_streaming_result_to_supabase(self, final_img: np.ndarray, config: Config) -> None:
+        ok, png_bytes = cv2.imencode('.png', final_img)
+        if not ok:
+            await self._notify_image_failed(config, 'failed to encode final.png')
+            raise RuntimeError("failed to encode final.png")
+        supabase_client = create_service_role_client()
+        try:
+            output_path = upload_file(
+                supabase_client,
+                png_bytes.tobytes(),
+                config.save.supabase_storage_path,
+                config.save.supabase_storage_bucket,
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload result image to supabase storage: {e}")
+            await self._notify_image_failed(config, f'Failed to upload result image to supabase storage: {e}')
+            raise
+        if hasattr(self, '_progress_hooks') and self._current_image_context:
+            await self._notify_image_completed(config, output_path)
+
+    async def _save_streaming_result_locally(self, final_img: np.ndarray, config: Config) -> None:
+        success = cv2.imwrite(self._result_path('final.png'), final_img)
+        if not success:
+            await self._notify_image_failed(config, 'failed to save final.png locally')
+            raise RuntimeError("failed to save final.png locally")
+        if hasattr(self, '_progress_hooks') and self._current_image_context:
+            folder_name = self._current_image_context['subfolder']
+            await self._notify_image_completed(config, folder_name)
 
     async def _run_colorizer(self, config: Config, ctx: Context):
         current_time = time.time()
@@ -770,36 +811,40 @@ class MangaTranslator:
     async def _run_textline_merge(self, config: Config, ctx: Context):
         current_time = time.time()
         self._model_usage_timestamps[("textline_merge", "textline_merge")] = current_time
-        text_regions = await dispatch_textline_merge(ctx.textlines, ctx.img_rgb.shape[1], ctx.img_rgb.shape[0],
-                                                     verbose=self.verbose)
-        for region in text_regions:
-            if not hasattr(region, "text_raw"):
-                region.text_raw = region.text      # <- Save the initial OCR results to expand the render detection box. Also, prevent affecting the forbidden translation function.       
-        # Filter out languages to skip  
-        if config.translator.skip_lang is not None:  
-            skip_langs = [lang.strip().upper() for lang in config.translator.skip_lang.split(',')]  
-            filtered_textlines = []  
-            for txtln in ctx.textlines:  
-                try:  
+
+        # Filter out languages to skip
+        if config.translator.skip_lang is not None:
+            skip_langs = [lang.strip().upper() for lang in config.translator.skip_lang.split(',')]
+            filtered_textlines = []
+            for txtln in ctx.textlines:
+                try:
                     detected_lang, confidence = langid.classify(txtln.text)
                     source_language = ISO_639_1_TO_VALID_LANGUAGES.get(detected_lang, 'UNKNOWN')
                     if source_language != 'UNKNOWN':
                         source_language = source_language.upper()
-                except Exception:  
-                    source_language = 'UNKNOWN'  
-    
-                # Print detected source_language and whether it's in skip_langs  
-                # logger.info(f'Detected source language: {source_language}, in skip_langs: {source_language in skip_langs}, text: "{txtln.text}"')  
-    
-                if source_language in skip_langs:  
-                    logger.info(f'Filtered out: {txtln.text}')  
-                    logger.info(f'Reason: Detected language {source_language} is in skip_langs')  
-                    continue  # Skip this region  
-                filtered_textlines.append(txtln)  
-            ctx.textlines = filtered_textlines  
-    
-        text_regions = await dispatch_textline_merge(ctx.textlines, ctx.img_rgb.shape[1], ctx.img_rgb.shape[0],  
-                                                     verbose=self.verbose)  
+                except Exception:
+                    source_language = 'UNKNOWN'
+
+                if source_language in skip_langs:
+                    logger.info(f'Filtered out: {txtln.text}')
+                    logger.info(f'Reason: Detected language {source_language} is in skip_langs')
+                    continue
+                filtered_textlines.append(txtln)
+            ctx.textlines = filtered_textlines
+
+        skip_merge = config.ocr.use_mocr_merge and config.ocr.ocr == Ocr.mocr
+        if skip_merge:
+            print("-------------- skip textline merge")
+            text_regions = await dispatch_mocr_merged(ctx.textlines, verbose=self.verbose)
+        else:
+            print("-------------- not skip textline merge")
+            text_regions = await dispatch_textline_merge(
+                ctx.textlines, ctx.img_rgb.shape[1], ctx.img_rgb.shape[0], verbose=self.verbose
+            )
+
+        for region in text_regions:
+            if not hasattr(region, "text_raw"):
+                region.text_raw = region.text
 
         new_text_regions = []
         for region in text_regions:
@@ -1040,9 +1085,9 @@ class MangaTranslator:
             if config.translator.translator == Translator.chatgpt_2stage:
                 # 添加result_path_callback到Context，让translator可以保存bboxes_fixed.png
                 ctx.result_path_callback = self._result_path
-                return await translator._translate(ctx.from_lang, config.translator.target_lang, texts, ctx)
+                return await translator._translate(config.translator.model_name, ctx.from_lang, config.translator.target_lang, texts, ctx)
             else:
-                return await translator._translate(ctx.from_lang, config.translator.target_lang, texts)
+                return await translator._translate(config.translator.model_name, ctx.from_lang, config.translator.target_lang, texts)
 
 
         return await dispatch_translation(
@@ -1369,13 +1414,14 @@ class MangaTranslator:
         # manga2eng currently only supports horizontal left to right rendering
         elif (config.render.renderer == Renderer.manga2Eng or config.render.renderer == Renderer.manga2EngPillow) and ctx.text_regions and LANGUAGE_ORIENTATION_PRESETS.get(ctx.text_regions[0].target_lang) == 'h':
             if config.render.renderer == Renderer.manga2EngPillow:
-                output = await dispatch_eng_render_pillow(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.line_spacing)
+                output = await dispatch_eng_render_pillow(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.font_name, config.render.line_spacing)
             else:
-                output = await dispatch_eng_render(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.line_spacing)
+                output = await dispatch_eng_render(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.font_name, config.render.line_spacing)
         else:
-            output = await dispatch_rendering(ctx.img_inpainted, ctx.text_regions, self.font_path, config.render.font_size,
+            output = await dispatch_rendering(ctx.img_inpainted, ctx.text_regions, self.font_path, config.render.font_name, config.render.font_size,
                                               config.render.font_size_offset,
-                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing)
+                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing,
+                                              config.render.disable_font_border, config.render.fit_to_box)
         return output
 
     def _result_path(self, path: str) -> str:
@@ -1421,6 +1467,16 @@ class MangaTranslator:
         for ph in self._progress_hooks:
             await ph(state, finished)
 
+    async def _notify_image_failed(self, config: Config, reason: str) -> None:
+        if not self.notify_progress_fail or not config.image_identifier:
+            return
+        await self._report_progress(f'image_failed:{config.image_identifier}:{reason}')
+
+    async def _notify_image_completed(self, config: Config, output_path: str) -> None:
+        if not config.image_identifier:
+            return
+        await self._report_progress(f'image_completed:{config.image_identifier}:{output_path}')
+
     def _add_logger_hook(self):
         # TODO: Pass ctx to logger hook
         LOG_MESSAGES = {
@@ -1432,6 +1488,9 @@ class MangaTranslator:
             'rendering': 'Running rendering',
             'colorizing': 'Running colorization',
             'downscaling': 'Running downscaling',
+            'saving_debug': 'Saving debug result',
+            'saving_result': 'Saving result image',
+            'saving_context': 'Saving translation context',
         }
         LOG_MESSAGES_SKIP = {
             'skip-no-regions': 'No text regions! - Skipping',
@@ -1554,6 +1613,7 @@ class MangaTranslator:
                     logger.info(f'Image {i+1} fallback processing successful')
                 except Exception as retry_error:
                     logger.error(f'Image {i+1} fallback processing also failed: {retry_error}')
+                    await self._notify_image_failed(config, f'Pre-processing fallback failed: {retry_error}')
                     # 创建空context作为占位符
                     ctx = Context()
                     ctx.input = image
@@ -1561,6 +1621,7 @@ class MangaTranslator:
                     pre_translation_contexts.append((ctx, config))
             except Exception as e:
                 logger.error(f'Image {i+1} pre-processing error: {e}')
+                await self._notify_image_failed(config, f'Pre-processing error: {e}')
                 # 创建空context作为占位符
                 ctx = Context()
                 ctx.input = image
@@ -1613,6 +1674,7 @@ class MangaTranslator:
                         
                 except Exception as individual_error:
                     logger.error(f'Individual page translation failed: {individual_error}')
+                    await self._notify_image_failed(config, f'Individual page translation failed: {individual_error}')
                     translated_contexts.append((ctx, config))
         
         # 完成翻译后的处理
@@ -1634,6 +1696,7 @@ class MangaTranslator:
                 logger.debug(f'Image {i+1} post-processing completed')
             except Exception as e:
                 logger.error(f'Image {i+1} post-processing error: {e}')
+                await self._notify_image_failed(config, f'Post-processing error: {e}')
                 results.append(ctx)
         
         logger.info(f'Batch translation completed: processed {len(results)} images')
@@ -1701,6 +1764,7 @@ class MangaTranslator:
                 ctx.img_colorized = await self._run_colorizer(config, ctx)
             except Exception as e:  
                 logger.error(f"Error during colorizing:\n{traceback.format_exc()}")  
+                await self._notify_image_failed(config, 'Error during colorizing')
                 if not self.ignore_errors:  
                     raise  
                 ctx.img_colorized = ctx.input
@@ -1714,6 +1778,7 @@ class MangaTranslator:
                 ctx.upscaled = await self._run_upscaling(config, ctx)
             except Exception as e:  
                 logger.error(f"Error during upscaling:\n{traceback.format_exc()}")  
+                await self._notify_image_failed(config, 'Error during upscaling')
                 if not self.ignore_errors:  
                     raise  
                 ctx.upscaled = ctx.img_colorized
@@ -1739,6 +1804,7 @@ class MangaTranslator:
 
         if not ctx.textlines:
             await self._report_progress('skip-no-regions', True)
+            await self._notify_image_failed(config, 'No text regions detected')
             ctx.result = ctx.upscaled
             return await self._revert_upscale(config, ctx)
 
@@ -1760,6 +1826,7 @@ class MangaTranslator:
 
         if not ctx.textlines:
             await self._report_progress('skip-no-text', True)
+            await self._notify_image_failed(config, 'No text found after ocr')
             ctx.result = ctx.upscaled
             return await self._revert_upscale(config, ctx)
 
@@ -1772,6 +1839,9 @@ class MangaTranslator:
             if not self.ignore_errors:  
                 raise 
             ctx.text_regions = []
+
+        if not ctx.text_regions:
+            await self._notify_image_failed(config, 'No text regions after textline merge')
 
         if self.verbose and ctx.text_regions:
             show_panels = not config.force_simple_sort  # 当不使用简单排序时显示panel
@@ -1992,6 +2062,7 @@ class MangaTranslator:
                     raise
                 # 错误时保持原文
                 for ctx, config in batch:
+                    await self._notify_image_failed(config, f'Error in batch translation: {e}')
                     if not ctx.text_regions:  # 检查text_regions是否为None或空
                         continue
                     for region in ctx.text_regions:
@@ -2159,6 +2230,7 @@ class MangaTranslator:
                 logger.error(f"Error in concurrent translation for single image: {e}")
                 if not self.ignore_errors:
                     raise
+                await self._notify_image_failed(config, f'Error in concurrent translation: {e}')
                 # 错误时保持原文
                 if ctx.text_regions:
                     for region in ctx.text_regions:
@@ -2196,6 +2268,7 @@ class MangaTranslator:
                     raise result
                 # 创建失败的占位符
                 ctx, config = contexts_with_configs[i]
+                await self._notify_image_failed(config, f'Concurrent translation failed: {result}')
                 if ctx.text_regions:
                     for region in ctx.text_regions:
                         region.translation = region.text
@@ -2316,6 +2389,7 @@ class MangaTranslator:
 
                 # ChatGPT2Stage需要传递ctx参数
                 return await translator._translate(
+                    config.translator.model_name,
                     ctx.from_lang,
                     config.translator.target_lang,
                     texts,
@@ -2324,6 +2398,7 @@ class MangaTranslator:
             else:
                 # 普通ChatGPT不需要ctx参数
                 return await translator._translate(
+                    config.translator.model_name,
                     ctx.from_lang,
                     config.translator.target_lang,
                     texts
@@ -2486,10 +2561,12 @@ class MangaTranslator:
 
         if not ctx.text_regions:
             await self._report_progress('error-translating', True)
+            await self._notify_image_failed(config, 'Text translator returned empty regions')
             ctx.result = ctx.upscaled
             return await self._revert_upscale(config, ctx)
         elif ctx.text_regions == 'cancel':
             await self._report_progress('cancelled', True)
+            await self._notify_image_failed(config, 'Image translation cancelled')
             ctx.result = ctx.upscaled
             return await self._revert_upscale(config, ctx)
 
@@ -2500,6 +2577,7 @@ class MangaTranslator:
                 ctx.mask = await self._run_mask_refinement(config, ctx)
             except Exception as e:  
                 logger.error(f"Error during mask-generation:\n{traceback.format_exc()}")  
+                await self._notify_image_failed(config, 'Error during mask-generation')
                 if not self.ignore_errors:  
                     raise 
                 ctx.mask = ctx.mask_raw if ctx.mask_raw is not None else np.zeros_like(ctx.img_rgb, dtype=np.uint8)[:,:,0]
@@ -2531,6 +2609,7 @@ class MangaTranslator:
 
         except Exception as e:  
             logger.error(f"Error during inpainting:\n{traceback.format_exc()}")  
+            await self._notify_image_failed(config, 'Error during inpainting')
             if not self.ignore_errors:  
                 raise
             else:
@@ -2551,7 +2630,7 @@ class MangaTranslator:
         await self._report_progress('rendering')
 
         # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
+        if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析
             await self._report_progress(f'rendering_folder:{folder_name}')
@@ -2560,6 +2639,7 @@ class MangaTranslator:
             ctx.img_rendered = await self._run_text_rendering(config, ctx)
         except Exception as e:
             logger.error(f"Error during rendering:\n{traceback.format_exc()}")
+            await self._notify_image_failed(config, 'Error during rendering')
             if not self.ignore_errors:
                 raise
             ctx.img_rendered = ctx.img_inpainted

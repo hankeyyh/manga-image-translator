@@ -5,7 +5,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from manga_translator import Config
-from server.sent_data_internal import fetch_data_stream, NotifyType, fetch_data
+from server.sent_data_internal import fetch_batch_stream, fetch_data_stream, NotifyType, fetch_data, fetch_batch_data
 
 class ExecutorInstance(BaseModel):
     ip: str
@@ -23,13 +23,17 @@ class ExecutorInstance(BaseModel):
 
     async def sent_batch(self, images: List[Image.Image], config: Config, batch_size: int):
         """发送批量翻译请求"""
-        return await fetch_data("http://"+self.ip+":"+str(self.port)+"/simple_execute/translate_batch", 
-                               {"images": images, "config": config, "batch_size": batch_size})
+        # return await fetch_data("http://"+self.ip+":"+str(self.port)+"/simple_execute/translate_batch", 
+        #                        {"images": images, "config": config, "batch_size": batch_size})
+        # yuhanyang 自定义
+        return await fetch_batch_data("http://"+self.ip+":"+str(self.port)+"/simple_execute/translate_batch", images, config, batch_size)
 
     async def sent_batch_stream(self, images: List[Image.Image], config: Config, batch_size: int, sender: NotifyType):
         """发送批量翻译流式请求"""
-        await fetch_data_stream("http://"+self.ip+":"+str(self.port)+"/execute/translate_batch",
-                               {"images": images, "config": config, "batch_size": batch_size}, config, sender)
+        # await fetch_data_stream("http://"+self.ip+":"+str(self.port)+"/execute/translate_batch",
+        #                        {"images": images, "config": config, "batch_size": batch_size}, config, sender)
+        # yuhanyang 自定义
+        return await fetch_batch_stream("http://"+self.ip+":"+str(self.port)+"/execute/translate_batch", images, config, batch_size, sender)
 
 class Executors:
     def __init__(self):

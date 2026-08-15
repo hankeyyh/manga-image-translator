@@ -313,7 +313,8 @@ class GeminiTranslator(CommonGPTTranslator):
         # If cache expire_time is less than 5 minutes (300 seconds) in the future: return True
         return delta < self._CACHE_TTL_BUFFER
 
-    async def _translate(self, from_lang: str, to_lang: str, queries: List[str]) -> List[str]:  
+    async def _translate(self, model_name: str, from_lang: str, to_lang: str, queries: List[str]) -> List[str]:  
+        self._current_model_name = self._resolve_model(model_name, GEMINI_MODEL)
         self.to_lang=to_lang # Export `to_lang`
         translations = [''] * len(queries)  
         self.logger.debug(f'Temperature: {self.temperature}, TopP: {self.top_p}')  
@@ -327,6 +328,7 @@ class GeminiTranslator(CommonGPTTranslator):
             # Assemble prompt for the current batch  
             prompt, query_size = self._assemble_prompts(from_lang, to_lang, prompt_queries).__next__()
 
+            server_error_attempt = 0
             for attempt in range(RETRY_ATTEMPTS):  
                 try:  
                     # Get the response (synchronously)
@@ -464,7 +466,7 @@ class GeminiTranslator(CommonGPTTranslator):
                         )
 
         response = await self.client.aio.models.generate_content(
-                                                model=GEMINI_MODEL,
+                                                model=getattr(self, '_current_model_name', None) or GEMINI_MODEL,
                                                 contents=messages,
                                                 config=types.GenerateContentConfig(
                                                             **config_kwargs
@@ -567,7 +569,7 @@ class _GeminiTranslator_json (_CommonGPTTranslator_JSON):
                             '\n------------'
                         )
         
-        response = await self.translator.client.aio.models.generate_content(model=GEMINI_MODEL,
+        response = await self.translator.client.aio.models.generate_content(model=getattr(self.translator, '_current_model_name', None) or GEMINI_MODEL,
                                                                             contents=messages,
                                                                             config=types.GenerateContentConfig(
                                                                                 **config_kwargs

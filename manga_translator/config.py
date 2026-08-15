@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Optional, Any, Literal, List
 
 from omegaconf import OmegaConf
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # TODO: Refactor
@@ -151,6 +151,11 @@ class Upscaler(str, Enum):
     esrgan = "esrgan"
     upscler4xultrasharp = "4xultrasharp"
 
+class SavePlace(str, Enum):
+    local = "local"
+    supabase_storage = "supabase_storage"
+
+
 class RenderConfig(BaseModel):
     renderer: Renderer = Renderer.default
     """Render english text translated from manga with some additional typesetting. Ignores some other argument options"""
@@ -158,6 +163,8 @@ class RenderConfig(BaseModel):
     """Align rendered text"""
     disable_font_border: bool = False
     """Disable font border"""
+    font_name: str = ''
+    """Font Name"""
     font_size_offset: int = 0
     """Offset font size by a given amount, positive number increase font size and vice versa"""
     font_size_minimum: int = -1
@@ -178,6 +185,8 @@ class RenderConfig(BaseModel):
     """Line spacing is font_size * this value. Default is 0.01 for horizontal text and 0.2 for vertical."""
     font_size: Optional[int] = None
     """Use fixed font size for rendering"""
+    fit_to_box: bool = True
+    """Shrink font to fit inside the OCR box instead of expanding the box for long translations"""
     rtl: bool = True
     """Right-to-left reading order for panel and text_region sorting,"""  
     _font_color_fg = None
@@ -215,8 +224,12 @@ class UpscaleConfig(BaseModel):
     """Image upscale ratio applied before detection. Can improve text detection."""
 
 class TranslatorConfig(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     translator: Translator = Translator.sugoi
     """Language translator to use"""
+    model_name: str = None
+    """Model Name"""
     target_lang: str = 'ENG' #todo: validate VALID_LANGUAGES #todo: convert to enum
     """Destination language"""
     no_text_lang_skip: bool = False
@@ -316,6 +329,16 @@ class OcrConfig(BaseModel):
     prob: float | None = None
     """Minimum probability of a text region to be considered valid. If None, uses the model default."""
 
+class SaveConfig(BaseModel):
+    save_to: SavePlace = SavePlace.local
+    """save to local or other storage"""
+    supabase_storage_bucket: str = None
+    """when save to supabase storage, set bucket here"""
+    supabase_storage_path: str = None
+    """when save to supabase storage, set path here, foramt: folder/subfolder/filename.png"""
+    supabase_storage_paths: List[str] = None
+    """when save batch images to supabase storage, set path here, foramt: folder/subfolder/filename.png"""
+
 class Config(BaseModel):
     # General
     filter_text: Optional[str] = None
@@ -342,6 +365,13 @@ class Config(BaseModel):
     mask_dilation_offset: int = 20
     """By how much to extend the text mask to remove left-over text pixels of the original image."""
     _filter_text = None
+    """filter text"""
+    save: SaveConfig = SaveConfig()
+    """save configs"""
+    image_identifier: str = None
+    """single image identifier"""
+    image_identifiers: List[str] = None
+    """identify each image in batch translate"""
 
     @property
     def re_filter_text(self):

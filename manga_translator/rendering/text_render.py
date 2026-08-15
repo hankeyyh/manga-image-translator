@@ -212,6 +212,15 @@ FALLBACK_FONTS = [
     os.path.join(BASE_PATH, 'fonts/msyh.ttc'),
     os.path.join(BASE_PATH, 'fonts/msgothic.ttc'),
 ]
+
+FONT_NAME_PATH_MAP = {
+    'Auto': 'fonts/anime_ace.ttf',
+    'Anime Ace': 'fonts/anime_ace.ttf',
+    'Anime Ace 3.0': 'fonts/anime_ace_3.ttf',
+    'Arial Unicode Regular': 'fonts/Arial-Unicode-Regular.ttf',
+    'Comic Shanns 2': 'fonts/comic shanns 2.ttf',
+}
+
 FONT_SELECTION: List[freetype.Face] = []
 font_cache = {}
 def get_cached_font(path: str) -> freetype.Face:
@@ -229,6 +238,13 @@ def set_font(font_path: str):
     else:
         selection = FALLBACK_FONTS
     FONT_SELECTION = [get_cached_font(p) for p in selection]
+
+def get_font_path(font_name: str):
+    rel_path = FONT_NAME_PATH_MAP.get(font_name) if font_name else None
+    logger.info(f"get_font_path, font_name: ${font_name}, rel_path: ${rel_path}")
+    if rel_path:
+        return os.path.join(BASE_PATH, rel_path)
+    return ''
 
 class namespace:
     pass
@@ -300,8 +316,8 @@ def calc_vertical(font_size: int, text: str, max_height: int):
 
     line_str = ""
     line_height = 0
-    line_width_left = 0
-    line_width_right = 0
+    # line_width_left = 0
+    # line_width_right = 0
     for i, cdpt in enumerate(text):
         if line_height == 0 and cdpt == ' ':
             continue
@@ -313,20 +329,20 @@ def calc_vertical(font_size: int, text: str, max_height: int):
             char_offset_y = ckpt.metrics.vertBearingY >> 6
         else:
             char_offset_y = ckpt.metrics.vertAdvance >> 6
-        char_width = bitmap.width
-        char_bearing_x = ckpt.metrics.vertBearingX >> 6
+        # char_width = bitmap.width
+        # char_bearing_x = ckpt.metrics.vertBearingX >> 6
         if line_height + char_offset_y > max_height:
             line_text_list.append(line_str)
             line_height_list.append(line_height)
             # line_width_list.append(line_width_left + line_width_right)
             line_str = ""
             line_height = 0
-            line_width_left = 0
-            line_width_right = 0
+            # line_width_left = 0
+            # line_width_right = 0
         line_height += char_offset_y
         line_str += cdpt
-        line_width_left = max(line_width_left, abs(char_bearing_x))
-        line_width_right = max(line_width_right, char_width - abs(char_bearing_x))
+        # line_width_left = max(line_width_left, abs(char_bearing_x))
+        # line_width_right = max(line_width_right, char_width - abs(char_bearing_x))
     # last char
     line_text_list.append(line_str)
     line_height_list.append(line_height)
