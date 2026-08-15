@@ -69,6 +69,7 @@ class TextBlock(object):
                  shadow_color: Tuple = (0, 0, 0),
                  shadow_offset: List = [0, 0],
                  prob: float = 1,
+                 src_direction: str = None,
                  **kwargs) -> None:
         self.lines = np.array(lines, dtype=np.int32)
         # self.lines.sort()
@@ -76,6 +77,8 @@ class TextBlock(object):
         self.font_size = round(font_size)
         self.angle = angle
         self._direction = direction
+        # Detected source writing direction ('h'/'v'); used when target-lang preset is 'auto'
+        self.src_direction = src_direction
 
         self.texts = texts if texts is not None else []
         self.text = texts[0]
@@ -234,7 +237,7 @@ class TextBlock(object):
         y2 = np.clip(y2, 0, im_h)
         img_croped = img[y1: y2, x1: x2]
 
-        direction = 'v' if self.src_is_vertical else 'h'
+        direction = 'v' if self.src_direction == 'v' else 'h'
 
         src_pts = line.copy()
         src_pts[:, 0] -= x1
@@ -369,40 +372,38 @@ class TextBlock(object):
 
     @property
     def direction(self):
-        """Render direction determined through used language or aspect ratio."""
+        """Render direction: forced config, target-lang preset, else source detection."""
         if self._direction not in ('h', 'v', 'hr', 'vr'):
             d = LANGUAGE_ORIENTATION_PRESETS.get(self.target_lang)
             if d in ('h', 'v', 'hr', 'vr'):
                 return d
 
-            # 根据region中面积最大的文本框的宽高比来判断排版方向
+            # preset is 'auto' (or unknown): follow detected source writing direction
+            if self.src_direction in ('h', 'v', 'hr', 'vr'):
+                return self.src_direction
+
+            # Fallback: largest line box aspect ratio
             if len(self.lines) > 0:
-                # 计算每个检测框的面积和宽高比
                 max_area = 0
                 largest_box_aspect_ratio = 1
 
                 for line in self.lines:
-                    # 计算检测框的面积
                     line_polygon = Polygon(line)
                     area = line_polygon.area
 
                     if area > max_area:
                         max_area = area
-                        # 计算该检测框的宽高比
-                        # 获取检测框的边界框
                         x_coords = line[:, 0]
                         y_coords = line[:, 1]
                         width = np.max(x_coords) - np.min(x_coords)
                         height = np.max(y_coords) - np.min(y_coords)
                         largest_box_aspect_ratio = width / height if height > 0 else 1
 
-                # 根据面积最大的检测框的宽高比判断方向
                 if largest_box_aspect_ratio < 1:
                     return 'v'
                 else:
                     return 'h'
             else:
-                # 如果没有lines，则使用整体的宽高比作为fallback
                 if self.aspect_ratio < 1:
                     return 'v'
                 else:

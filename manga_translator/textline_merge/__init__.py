@@ -178,8 +178,8 @@ def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
             nodes = sorted(nodes, key=lambda x: -bboxes[x].centroid[0])
         txtlns = np.array(bboxes)[nodes]
 
-        # yield overall bbox and sorted indices
-        yield txtlns, (fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b)
+        # yield overall bbox, colors, and detected source writing direction
+        yield txtlns, (fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b), majority_dir
 
 async def dispatch_mocr_merged(textlines: List[Quadrilateral], verbose: bool = False) -> List[TextBlock]:
     """Convert mocr pre-merged quadrilaterals to TextBlocks (one region per quad, no merge)."""
@@ -196,6 +196,7 @@ async def dispatch_mocr_merged(textlines: List[Quadrilateral], verbose: bool = F
             prob=txtln.prob,
             fg_color=(txtln.fg_r, txtln.fg_g, txtln.fg_b),
             bg_color=(txtln.bg_r, txtln.bg_g, txtln.bg_b),
+            src_direction=txtln.direction,
         )
         text_regions.append(region)
     return text_regions
@@ -210,7 +211,7 @@ async def dispatch(textlines: List[Quadrilateral], width: int, height: int, verb
     #     print(s)
 
     text_regions: List[TextBlock] = []
-    for (txtlns, fg_color, bg_color) in merge_bboxes_text_region(textlines, width, height):
+    for (txtlns, fg_color, bg_color, src_direction) in merge_bboxes_text_region(textlines, width, height):
         total_logprobs = 0
         for txtln in txtlns:
             total_logprobs += np.log(txtln.prob) * txtln.area
@@ -223,6 +224,6 @@ async def dispatch(textlines: List[Quadrilateral], width: int, height: int, verb
         lines = [txtln.pts for txtln in txtlns]
         texts = [txtln.text for txtln in txtlns]
         region = TextBlock(lines, texts, font_size=font_size, angle=angle, prob=np.exp(total_logprobs),
-                           fg_color=fg_color, bg_color=bg_color)
+                           fg_color=fg_color, bg_color=bg_color, src_direction=src_direction)
         text_regions.append(region)
     return text_regions
