@@ -279,6 +279,23 @@ async def manual():
 def generate_nonce():
     return secrets.token_hex(16)
 
+MAX_WORKER_COUNT = 8
+
+def get_worker_count() -> int:
+    raw = os.getenv('MT_WORKER_COUNT', '1')
+    try:
+        count = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f'Invalid MT_WORKER_COUNT={raw!r}, falling back to 1')
+        return 1
+    if count < 1:
+        print(f'MT_WORKER_COUNT={count} < 1, falling back to 1')
+        return 1
+    if count > MAX_WORKER_COUNT:
+        print(f'MT_WORKER_COUNT={count} exceeds max {MAX_WORKER_COUNT}, clamping')
+        return MAX_WORKER_COUNT
+    return count
+
 def start_translator_client_proc(host: str, port: int, nonce: str, params: Namespace):
     cmds = [
         sys.executable,
@@ -308,15 +325,25 @@ def start_translator_client_proc(host: str, port: int, nonce: str, params: Names
     parent = os.path.dirname(base_path)
     proc = subprocess.Popen(cmds, cwd=parent)
     executor_instances.register(ExecutorInstance(ip=host, port=port))
+    return proc
 
-    def handle_exit_signals(signal, frame):
-        proc.terminate()
+def start_translator_client_procs(host: str, base_port: int, nonce: str, params: Namespace, count: int):
+    procs = []
+    for i in range(count):
+        port = base_port + i
+        procs.append(start_translator_client_proc(host, port, nonce, params))
+        print(f'Registered worker at {host}:{port} (pid={procs[-1].pid})')
+
+    def handle_exit_signals(signum, frame):
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_exit_signals)
     signal.signal(signal.SIGTERM, handle_exit_signals)
 
-    return proc
+    return procs
 
 def prepare(args):
     global nonce
@@ -328,7 +355,9 @@ def prepare(args):
     if nonce is not None:
         os.environ['MT_WEB_NONCE'] = nonce
     if args.start_instance:
-        return start_translator_client_proc(args.host, args.port + 1, nonce, args)
+        worker_count = get_worker_count()
+        print(f'Starting {worker_count} translator worker(s)')
+        return start_translator_client_procs(args.host, args.port + 1, nonce, args, worker_count)
     folder_name= "upload-cache"
     if os.path.exists(folder_name):
         shutil.rmtree(folder_name)
@@ -435,10 +464,11 @@ if __name__ == '__main__':
 
     args = parse_arguments()
     args.start_instance = True
-    proc = prepare(args)
+    procs = prepare(args)
     print("Nonce: "+nonce)
     try:
         uvicorn.run(app, host=args.host, port=args.port)
     except Exception:
-        if proc:
-            proc.terminate()
+        for proc in procs or []:
+            if proc.poll() is None:
+                proc.terminate()

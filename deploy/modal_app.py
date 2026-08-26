@@ -105,13 +105,15 @@ def web():
     Main ASGI web application endpoint with worker subprocess.
 
     This function:
-    1. Starts a worker subprocess (mode=shared) that does actual ML processing
+    1. Starts worker subprocesses (mode=shared) that do actual ML processing
     2. Imports and returns the FastAPI app (master) that handles HTTP requests
-    3. Manages the lifecycle of both processes
+    3. Manages the lifecycle of both master and worker processes
+
+    Worker count is controlled by MT_WORKER_COUNT (default 1).
 
     Architecture:
     - Master (FastAPI): Handles HTTP, queues tasks, returns results
-    - Worker (subprocess): Loads models, runs detection/OCR/inpainting
+    - Workers (subprocesses): Load models, run detection/OCR/inpainting
     - Communication: HTTP requests with pickle serialization + nonce auth
     """
     import sys
@@ -120,6 +122,10 @@ def web():
     import time
     import atexit
     sys.path.insert(0, "/app")
+
+    from server.main import app as fastapi_app, prepare, get_worker_count
+    from server.instance import ExecutorInstance, executor_instances
+    from argparse import Namespace
 
     # Get nonce from environment (set by Modal secret)
     nonce = os.environ.get('MT_WEB_NONCE')
@@ -131,7 +137,10 @@ def web():
 
     # Worker configuration
     worker_host = "127.0.0.1"
-    worker_port = 5004  # Different from master port
+    worker_base_port = 5004  # Different from master port
+    worker_count = get_worker_count()
+    worker_ports = [worker_base_port + i for i in range(worker_count)]
+    worker_processes = []
 
     # Check if GPU is available
     use_gpu = False
@@ -142,98 +151,91 @@ def web():
     except Exception as e:
         print(f"Could not detect GPU: {e}")
 
-    # Start worker subprocess
-    worker_cmd = [
-        sys.executable,
-        '-m', 'manga_translator',
-        'shared',
-        '--host', worker_host,
-        '--port', str(worker_port),
-        '--nonce', nonce,
-    ]
+    def build_worker_cmd(port: int):
+        cmd = [
+            sys.executable,
+            '-m', 'manga_translator',
+            'shared',
+            '--host', worker_host,
+            '--port', str(port),
+            '--nonce', nonce,
+        ]
+        if use_gpu:
+            cmd.append('--use-gpu')
+        cmd.append('--ignore-errors')
+        cmd.append('--notify-progress-fail')
+        return cmd
 
-    if use_gpu:
-        worker_cmd.append('--use-gpu')
+    def terminate_workers():
+        for proc in worker_processes:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
-    worker_cmd.append('--ignore-errors')
-    worker_cmd.append('--notify-progress-fail')
+    def wait_for_worker(port: int, proc: subprocess.Popen):
+        print(f"Waiting for worker HTTP server on port {port}...")
+        max_wait_time = 120
+        check_interval = 5
+        elapsed = 0
+        while elapsed < max_wait_time:
+            if proc.poll() is not None:
+                print(f"Worker on port {port} died during startup! Exit code: {proc.returncode}")
+                return False
+            try:
+                import httpx
+                response = httpx.get(
+                    f"http://{worker_host}:{port}/is_locked",
+                    timeout=3.0
+                )
+                if response.status_code == 200:
+                    print(f"Worker on port {port} is ready! (took {elapsed}s)")
+                    return True
+            except Exception as e:
+                print(f"Worker on port {port} not ready yet (waited {elapsed}s): {e}")
+            time.sleep(check_interval)
+            elapsed += check_interval
+        print(f"Worker on port {port} failed to start within {max_wait_time}s")
+        return False
 
-    print(f"Starting worker subprocess: {' '.join(worker_cmd)}")
+    print(f"Starting {worker_count} worker subprocess(es)")
+    for port in worker_ports:
+        worker_cmd = build_worker_cmd(port)
+        print(f"Starting worker subprocess: {' '.join(worker_cmd)}")
+        proc = subprocess.Popen(
+            worker_cmd,
+            cwd="/app",
+            stdout=None,  # Inherit parent's stdout (shows in Modal logs)
+            stderr=None,  # Inherit parent's stderr (shows in Modal logs)
+        )
+        worker_processes.append(proc)
 
-    worker_process = subprocess.Popen(
-        worker_cmd,
-        cwd="/app",
-        stdout=None,  # Inherit parent's stdout (shows in Modal logs)
-        stderr=None,  # Inherit parent's stderr (shows in Modal logs)
-    )
+    for port, proc in zip(worker_ports, worker_processes):
+        if not wait_for_worker(port, proc):
+            terminate_workers()
+            raise RuntimeError(f"Worker subprocess on port {port} failed to start")
+        print(f"Worker subprocess started with PID: {proc.pid} port={port}")
 
-    # Wait for worker HTTP server to be ready (with retry)
-    print("Waiting for worker HTTP server to start...")
-    worker_ready = False
-    max_wait_time = 120  # 2 minutes max wait
-    check_interval = 5   # Check every 5 seconds
-    elapsed = 0
-
-    while elapsed < max_wait_time:
-        # Check if worker process is still alive
-        if worker_process.poll() is not None:
-            print(f"Worker process died during startup! Exit code: {worker_process.returncode}")
-            print(f"Check logs above for worker error messages")
-            raise RuntimeError("Worker subprocess failed to start")
-
-        # Try to connect to worker HTTP server
-        try:
-            import httpx
-            response = httpx.get(
-                f"http://{worker_host}:{worker_port}/is_locked",
-                timeout=3.0
-            )
-            if response.status_code == 200:
-                worker_ready = True
-                print(f"Worker HTTP server is ready! (took {elapsed}s)")
-                break
-        except Exception as e:
-            print(f"Worker not ready yet (waited {elapsed}s): {e}")
-
-        time.sleep(check_interval)
-        elapsed += check_interval
-
-    if not worker_ready:
-        print(f"Worker HTTP server failed to start within {max_wait_time}s")
-        worker_process.terminate()
-        raise RuntimeError("Worker HTTP server failed to start in time")
-
-    print(f"Worker subprocess started with PID: {worker_process.pid}")
-
-    # Register worker instance with master
+    # Register worker instances with master
     # This is done automatically by server.main when --start-instance is used,
     # but since we're starting manually, we need to do it ourselves
-    from server.instance import ExecutorInstance, executor_instances
-    executor_instances.register(ExecutorInstance(ip=worker_host, port=worker_port))
-    print(f"Registered worker at {worker_host}:{worker_port}")
+    for port in worker_ports:
+        executor_instances.register(ExecutorInstance(ip=worker_host, port=port))
+        print(f"Registered worker at {worker_host}:{port}")
 
-    # Setup cleanup on exit
-    def cleanup_worker():
-        print("Cleaning up worker subprocess...")
-        if worker_process.poll() is None:
-            worker_process.terminate()
-            try:
-                worker_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                worker_process.kill()
-        print("Worker subprocess terminated")
+    def cleanup_workers():
+        print("Cleaning up worker subprocesses...")
+        terminate_workers()
+        print("Worker subprocesses terminated")
 
-    atexit.register(cleanup_worker)
-
-    # Import the FastAPI app (master)
-    from server.main import app as fastapi_app
-    from server.main import prepare
-    from argparse import Namespace
+    atexit.register(cleanup_workers)
 
     # Prepare the server (initialize upload-cache, etc.)
     args = Namespace(
         host=worker_host,
-        port=worker_port,
+        port=worker_base_port,
         nonce=nonce,
         start_instance=False,  # We already started it manually
         use_gpu=use_gpu,
@@ -247,39 +249,40 @@ def web():
     )
     prepare(args)
 
-    # Add health check endpoint
-    from fastapi import Response
-
     @fastapi_app.get("/health")
     async def health_check():
         """Health check endpoint for monitoring."""
-        worker_alive = worker_process.poll() is None
+        import httpx
 
-        # Check if worker is responding
-        worker_healthy = False
-        if worker_alive:
-            try:
-                import httpx
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"http://{worker_host}:{worker_port}/is_locked",
-                        timeout=5.0
-                    )
-                    worker_healthy = response.status_code == 200
-            except Exception as e:
-                print(f"Worker health check failed: {e}")
+        workers = []
+        async with httpx.AsyncClient() as client:
+            for port, proc in zip(worker_ports, worker_processes):
+                alive = proc.poll() is None
+                healthy = False
+                if alive:
+                    try:
+                        response = await client.get(
+                            f"http://{worker_host}:{port}/is_locked",
+                            timeout=5.0
+                        )
+                        healthy = response.status_code == 200
+                    except Exception as e:
+                        print(f"Worker health check failed on port {port}: {e}")
+                workers.append({
+                    "pid": proc.pid,
+                    "alive": alive,
+                    "healthy": healthy,
+                    "host": worker_host,
+                    "port": port,
+                })
 
+        all_healthy = bool(workers) and all(w["alive"] and w["healthy"] for w in workers)
         return {
-            "status": "healthy" if (worker_alive and worker_healthy) else "degraded",
+            "status": "healthy" if all_healthy else "degraded",
             "service": "manga-translator",
             "gpu_available": use_gpu,
-            "worker": {
-                "pid": worker_process.pid,
-                "alive": worker_alive,
-                "healthy": worker_healthy,
-                "host": worker_host,
-                "port": worker_port,
-            }
+            "worker_count": len(workers),
+            "workers": workers,
         }
 
     return fastapi_app
