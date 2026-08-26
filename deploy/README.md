@@ -24,14 +24,14 @@ modal token new  # 会打开浏览器进行登录
 
 ### 2. 配置环境变量
 ```bash
-# 复制环境变量模板
-cp .env.modal.example .env
+# 本地开发继续用 .env
+# Modal 部署使用 .env.prod
 
-# 生成认证 nonce 并添加到 .env
-echo "MT_WEB_NONCE=$(openssl rand -hex 32)" >> .env
+# 若还没有生产配置，可从本地复制后改 Supabase 地址
+cp .env .env.prod
 
-# 编辑并添加你的翻译 API 密钥（可选）
-vim .env
+# 编辑生产密钥：SUPABASE_URL 必须是云端地址，不能是 127.0.0.1
+vim .env.prod
 ```
 
 ### 3. 一键部署
@@ -57,19 +57,16 @@ curl https://YOUR-URL/health
 
 ### 步骤 1: 配置 Secrets
 
-#### 方式 A: 从 .env 文件创建（推荐）
+#### 方式 A: 从 .env.prod 文件创建（推荐）
 ```bash
-# 1. 准备 .env 文件
-cp .env.modal.example .env
+# 1. 准备生产环境文件（本地开发继续用 .env）
+cp .env .env.prod
 
-# 2. 生成 nonce 并添加到 .env
-echo "MT_WEB_NONCE=$(openssl rand -hex 32)" >> .env
+# 2. 编辑 .env.prod：SUPABASE_URL 必须是云端地址
+vim .env.prod
 
-# 3. 编辑 .env 添加翻译 API 密钥（可选）
-vim .env
-
-# 4. 一次性创建 Modal secret（包含所有变量）
-modal secret create manga-translator-env --from-dotenv-file .env
+# 3. 一次性创建 Modal secret（包含所有变量）
+modal secret create manga-translator-env --from-dotenv .env.prod --force
 ```
 
 #### 方式 B: 命令行直接创建
@@ -222,7 +219,7 @@ modal deploy deploy/modal_app.py
 
 ### 翻译服务配置
 
-在 `.env` 中配置（所有服务都是可选的）:
+在 `.env.prod` 中配置（所有服务都是可选的）; 本地开发用 `.env`:
 
 | 服务 | 环境变量 | 免费额度 |
 |------|----------|----------|
@@ -680,7 +677,7 @@ python deploy/smoke_test.py --url URL --verbose         # 详细输出
 
 ## 📖 环境变量参考
 
-完整的环境变量列表见 `.env.modal.example`。
+完整的环境变量列表见 `.env`（本地）和 `.env.prod`（Modal 生产）。
 
 **必需**:
 ```bash
@@ -700,7 +697,7 @@ DEEPL_AUTH_KEY=...
 # Gemini
 GEMINI_API_KEY=...
 
-# 更多服务见 .env.modal.example
+# 更多服务见 .env / .env.prod
 ```
 
 ---

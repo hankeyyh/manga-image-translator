@@ -53,39 +53,52 @@ check_modal() {
     fi
 }
 
-# Setup: Create secrets
+PROD_ENV_FILE=".env.prod"
+
+# Setup: Create secrets from production env
 setup() {
     print_header "Modal Setup"
 
     check_modal
 
-    print_info "Checking for .env file..."
-    if [ ! -f .env ]; then
-        print_warning ".env file not found"
-        print_info "Creating .env from template..."
-        cp .env.modal.example .env
-
-        print_info "Generating MT_WEB_NONCE..."
-        NONCE=$(openssl rand -hex 32)
-        echo "MT_WEB_NONCE=$NONCE" >> .env
-
-        print_success ".env file created with MT_WEB_NONCE"
-        print_warning "Please edit .env and add your translation API keys (optional)"
-        print_info "Then run: ./deploy/deploy.sh setup"
-        exit 0
+    print_info "Checking for ${PROD_ENV_FILE} (production env for Modal secrets)..."
+    if [ ! -f "$PROD_ENV_FILE" ]; then
+        if [ -f .env ]; then
+            cp .env "$PROD_ENV_FILE"
+            print_warning "Created ${PROD_ENV_FILE} from .env"
+            print_info "Edit ${PROD_ENV_FILE}: set production SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
+            print_info "Then run: ./deploy/deploy.sh setup"
+            exit 0
+        fi
+        print_error "${PROD_ENV_FILE} not found"
+        print_info "Create it from local .env, then set production Supabase values:"
+        print_info "  cp .env ${PROD_ENV_FILE}"
+        exit 1
     fi
 
-    print_info "Checking if MT_WEB_NONCE exists in .env..."
-    if ! grep -q "^MT_WEB_NONCE=" .env; then
-        print_warning "MT_WEB_NONCE not found in .env"
+    print_info "Checking if MT_WEB_NONCE exists in ${PROD_ENV_FILE}..."
+    if ! grep -q "^MT_WEB_NONCE=" "$PROD_ENV_FILE"; then
+        print_warning "MT_WEB_NONCE not found in ${PROD_ENV_FILE}"
         print_info "Generating and adding MT_WEB_NONCE..."
         NONCE=$(openssl rand -hex 32)
-        echo "MT_WEB_NONCE=$NONCE" >> .env
-        print_success "MT_WEB_NONCE added to .env"
+        echo "MT_WEB_NONCE=$NONCE" >> "$PROD_ENV_FILE"
+        print_success "MT_WEB_NONCE added to ${PROD_ENV_FILE}"
     fi
 
-    print_info "Creating Modal secret from .env file..."
-    modal secret create manga-translator-env --from-dotenv .env --force
+    if grep -Eq "^[[:space:]]*SUPABASE_URL[[:space:]]*=[[:space:]]*['\"]?https?://(127\.0\.0\.1|localhost)" "$PROD_ENV_FILE"; then
+        print_error "SUPABASE_URL in ${PROD_ENV_FILE} points to localhost; Modal cannot reach it."
+        print_info "Set SUPABASE_URL to your cloud Supabase project URL, then re-run setup."
+        exit 1
+    fi
+
+    if grep -Eq "^[[:space:]]*SUPABASE_SERVICE_ROLE_KEY[[:space:]]*=[[:space:]]*['\"]?[[:space:]]*$" "$PROD_ENV_FILE"; then
+        print_error "SUPABASE_SERVICE_ROLE_KEY in ${PROD_ENV_FILE} is empty."
+        print_info "Set the cloud project's service_role key, then re-run setup."
+        exit 1
+    fi
+
+    print_info "Creating Modal secret from ${PROD_ENV_FILE}..."
+    modal secret create manga-translator-env --from-dotenv "$PROD_ENV_FILE" --force
 
     print_success "Setup completed!"
     print_info "Next steps:"
@@ -233,7 +246,7 @@ Manga Image Translator - Modal Deployment Script
 Usage: ./deploy/deploy.sh [command]
 
 Commands:
-  setup     Initial setup (create secrets from .env file)
+  setup     Initial setup (create Modal secrets from .env.prod)
   deploy    Deploy the application to Modal
   models    Download models to persistent volume
   test [case] [-i image ...]  Run smoke tests against deployed app
@@ -252,8 +265,8 @@ Commands:
   help      Show this help message
 
 Quick Start:
-  1. cp .env.modal.example .env
-  2. vim .env  # Add your API keys
+  1. Keep .env for local development
+  2. vim .env.prod  # Production keys; set cloud SUPABASE_URL
   3. ./deploy/deploy.sh setup
   4. ./deploy/deploy.sh deploy
   5. ./deploy/deploy.sh models

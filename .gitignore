@@ -9,6 +9,7 @@ Manga
 Manga-translated
 /models
 .env
+.env.prod
 *.local
 *.local.*
 test/testdata
