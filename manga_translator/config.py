@@ -335,9 +335,9 @@ class SaveConfig(BaseModel):
     supabase_storage_bucket: str = None
     """when save to supabase storage, set bucket here"""
     supabase_storage_path: str = None
-    """when save to supabase storage, set path here, foramt: folder/subfolder/filename.png"""
+    """when save to supabase storage, set path here, foramt: folder/subfolder/filename.webp"""
     supabase_storage_paths: List[str] = None
-    """when save batch images to supabase storage, set path here, foramt: folder/subfolder/filename.png"""
+    """when save batch images to supabase storage, set path here, foramt: folder/subfolder/filename.webp"""
 
 class Config(BaseModel):
     # General

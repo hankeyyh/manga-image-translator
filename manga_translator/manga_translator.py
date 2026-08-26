@@ -1,5 +1,6 @@
 import asyncio
 import cv2
+import io
 import json
 import langcodes
 import os
@@ -45,6 +46,25 @@ from .utils.supabase import create_service_role_client, upload_file
 
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
 logger = logging.getLogger('manga_translator')
+
+RESULT_WEBP_QUALITY = 90
+RESULT_WEBP_METHOD = 6
+RESULT_WEBP_FILENAME = 'final.webp'
+
+def _prepare_webp_image(image: Image.Image) -> Image.Image:
+    if image.mode in ('RGB', 'RGBA'):
+        return image
+    return image.convert('RGBA' if 'A' in image.getbands() else 'RGB')
+
+def encode_webp_bytes(image: Image.Image, quality: int = RESULT_WEBP_QUALITY) -> bytes:
+    buf = io.BytesIO()
+    _prepare_webp_image(image).save(
+        buf,
+        format='WEBP',
+        quality=quality,
+        method=RESULT_WEBP_METHOD,
+    )
+    return buf.getvalue()
 
 # 全局console实例，用于日志重定向
 _global_console = None
@@ -611,7 +631,7 @@ class MangaTranslator:
         # -- Rendering
         await self._report_progress('rendering')
 
-        # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
+        # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.webp
         if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析
@@ -629,7 +649,7 @@ class MangaTranslator:
         # 把numpy结果数组，渲染到img pil画布上
         ctx.result = dump_image(ctx.input, ctx.img_rendered, ctx.img_alpha)
 
-        # 如果流式输出，把ctx.result保存为final.png
+        # 如果流式输出，把ctx.result保存为final.webp
         return await self._revert_upscale(config, ctx)
     
     # If `revert_upscaling` is True, revert to input size
@@ -639,36 +659,32 @@ class MangaTranslator:
             await self._report_progress('downscaling')
             ctx.result = ctx.result.resize(ctx.input.size)
 
-        # 在verbose模式下保存final.png到调试文件夹
+        # 在verbose模式下保存final.webp到调试文件夹
         if ctx.result and self.verbose:
             await self._report_progress('saving_debug')
             try:
-                final_img = np.array(ctx.result)
-                if len(final_img.shape) == 3:  # 彩色图片，转换BGR顺序
-                    final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
-                final_path = self._result_path('final.png')
-                success = cv2.imwrite(final_path, final_img)
-                if not success:
-                    logger.warning(f"Failed to save debug image: {final_path}")
+                final_path = self._result_path(RESULT_WEBP_FILENAME)
+                _prepare_webp_image(ctx.result).save(
+                    final_path,
+                    format='WEBP',
+                    quality=RESULT_WEBP_QUALITY,
+                    method=RESULT_WEBP_METHOD,
+                )
             except Exception as e:
-                logger.error(f"Error saving final.png debug image: {e}")
+                logger.error(f"Error saving final.webp debug image: {e}")
                 logger.debug(f"Exception details: {traceback.format_exc()}")
 
-        # Web流式模式优化：保存final.png并使用占位符
+        # Web流式模式优化：保存final.webp并使用占位符
         if ctx.result and not self.result_sub_folder and hasattr(self, '_is_streaming_mode') and self._is_streaming_mode:
             await self._report_progress('saving_result')
-            final_img = np.array(ctx.result)
-            if len(final_img.shape) == 3:  # 彩色图片，转换BGR顺序
-                final_img = cv2.cvtColor(final_img, cv2.COLOR_RGB2BGR)
 
             # 根据config决定保存本地 or supabase storage
             if config.save.save_to == SavePlace.supabase_storage:
-                await self._save_streaming_result_to_supabase(final_img, config)
+                await self._save_streaming_result_to_supabase(ctx.result, config)
             elif config.save.save_to == SavePlace.local:
-                await self._save_streaming_result_locally(final_img, config)
+                await self._save_streaming_result_locally(ctx.result, config)
 
             # 创建占位符结果并立即返回
-            from PIL import Image
             placeholder = Image.new('RGB', (1, 1), color='white')
             ctx.result = placeholder
             ctx.use_placeholder = True
@@ -676,18 +692,21 @@ class MangaTranslator:
 
         return ctx
 
-    async def _save_streaming_result_to_supabase(self, final_img: np.ndarray, config: Config) -> None:
-        ok, png_bytes = cv2.imencode('.png', final_img)
-        if not ok:
-            await self._notify_image_failed(config, 'failed to encode final.png')
-            raise RuntimeError("failed to encode final.png")
+    async def _save_streaming_result_to_supabase(self, result: Image.Image, config: Config) -> None:
+        try:
+            webp_bytes = encode_webp_bytes(result)
+        except Exception as e:
+            logger.error(f"Failed to encode final.webp: {e}")
+            await self._notify_image_failed(config, 'failed to encode final.webp')
+            raise RuntimeError("failed to encode final.webp") from e
         supabase_client = create_service_role_client()
         try:
             output_path = upload_file(
                 supabase_client,
-                png_bytes.tobytes(),
+                webp_bytes,
                 config.save.supabase_storage_path,
                 config.save.supabase_storage_bucket,
+                content_type='image/webp',
             )
         except Exception as e:
             logger.error(f"Failed to upload result image to supabase storage: {e}")
@@ -696,11 +715,18 @@ class MangaTranslator:
         if hasattr(self, '_progress_hooks') and self._current_image_context:
             await self._notify_image_completed(config, output_path)
 
-    async def _save_streaming_result_locally(self, final_img: np.ndarray, config: Config) -> None:
-        success = cv2.imwrite(self._result_path('final.png'), final_img)
-        if not success:
-            await self._notify_image_failed(config, 'failed to save final.png locally')
-            raise RuntimeError("failed to save final.png locally")
+    async def _save_streaming_result_locally(self, result: Image.Image, config: Config) -> None:
+        try:
+            _prepare_webp_image(result).save(
+                self._result_path(RESULT_WEBP_FILENAME),
+                format='WEBP',
+                quality=RESULT_WEBP_QUALITY,
+                method=RESULT_WEBP_METHOD,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save final.webp locally: {e}")
+            await self._notify_image_failed(config, 'failed to save final.webp locally')
+            raise RuntimeError("failed to save final.webp locally") from e
         if hasattr(self, '_progress_hooks') and self._current_image_context:
             folder_name = self._current_image_context['subfolder']
             await self._notify_image_completed(config, folder_name)
@@ -1442,7 +1468,7 @@ class MangaTranslator:
                 return result_path
         
         # 在server/web模式下（result_sub_folder为空）且为非verbose模式时
-        # 需要创建一个子文件夹来保存final.png
+        # 需要创建一个子文件夹来保存final.webp
         if not self.result_sub_folder:
             if self._current_image_context:
                 # 直接使用已生成的子文件夹名
@@ -2629,7 +2655,7 @@ class MangaTranslator:
         # -- Rendering
         await self._report_progress('rendering')
 
-        # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.png
+        # 在rendering状态后立即发送文件夹信息，用于前端精确检查final.webp
         if hasattr(self, '_progress_hooks') and self._current_image_context and config.save.save_to == SavePlace.local:
             folder_name = self._current_image_context['subfolder']
             # 发送特殊格式的消息，前端可以解析

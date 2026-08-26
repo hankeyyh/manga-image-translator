@@ -13,12 +13,13 @@ def create_service_role_client() -> Client:
     return create_client(url, key)
 
 
-def upload_file(supabase: Client, file, path, bucket) -> str:
+def upload_file(supabase: Client, file, path, bucket, content_type: str = "image/webp") -> str:
     response = supabase.storage.from_(bucket).upload(
         path=path,
         file=file,
         file_options={
-            "cache-control": "3600", 
+            "cache-control": "3600",
+            "content-type": content_type,
             "upsert": "true" # 为了支持重试，如果后续ts步骤失败，会触发重新翻译
         }
     )

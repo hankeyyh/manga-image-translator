@@ -394,7 +394,7 @@ class SmokeTest:
                 debug_folder = item.get("debug_folder")
                 if debug_folder:
                     try:
-                        result_url = f"{self.base_url}/result/{debug_folder}/final.png"
+                        result_url = f"{self.base_url}/result/{debug_folder}/final.webp"
                         result_response = requests.get(result_url, timeout=60)
                         result_response.raise_for_status()
                         result_img = Image.open(io.BytesIO(result_response.content))

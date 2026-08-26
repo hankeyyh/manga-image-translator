@@ -30,6 +30,13 @@ BASE_DIR = Path(__file__).resolve().parent
 RESULT_ROOT = (BASE_DIR.parent / "result").resolve()
 RESULT_ROOT.mkdir(parents=True, exist_ok=True)
 
+def find_final_result(folder_path: Path) -> Path | None:
+    for name in ("final.webp", "final.png"):
+        candidate = folder_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,7 +58,7 @@ async def register_instance(instance: ExecutorInstance, req: Request, req_nonce:
 
 # ctx 是子进程返回的, 详细结构见to_json.py
 def transform_to_image(ctx):
-    # 检查是否使用占位符（在web模式下final.png保存后会设置此标记）
+    # 检查是否使用占位符（在web模式下final.webp保存后会设置此标记）
     if hasattr(ctx, 'use_placeholder') and ctx.use_placeholder:
         # ctx.result已经是1x1占位符图片，快速传输
         img_byte_arr = io.BytesIO()
@@ -167,7 +174,7 @@ async def stream_image_form_web(req: Request, image: UploadFile = File(...), con
     """Web前端专用端点：使用占位符优化，提供极速体验"""
     img = await image.read()
     conf = Config.parse_raw(config)
-    # 标记为Web前端优化模式，使用占位符优化，结果会保存为final.png
+    # 标记为Web前端优化模式，使用占位符优化，结果会保存为final.webp
     conf._web_frontend_optimized = True
     return await while_streaming(req, transform_to_image, conf, img)
 
@@ -176,6 +183,7 @@ async def queue_size() -> int:
     return len(task_queue.queue)
 
 
+@app.api_route("/result/{folder_name}/final.webp", methods=["GET", "HEAD"], tags=["api", "file"])
 @app.api_route("/result/{folder_name}/final.png", methods=["GET", "HEAD"], tags=["api", "file"])
 async def get_result_by_folder(folder_name: str):
     """根据文件夹名称获取翻译结果图片"""
@@ -187,18 +195,20 @@ async def get_result_by_folder(folder_name: str):
     if not folder_path.exists() or not folder_path.is_dir():
         raise HTTPException(404, detail=f"Folder {folder_name} not found")
 
-    final_png_path = folder_path / "final.png"
-    if not final_png_path.exists():
-        raise HTTPException(404, detail="final.png not found in folder")
+    final_path = find_final_result(folder_path)
+    if final_path is None:
+        raise HTTPException(404, detail="final.webp not found in folder")
+
+    media_type = "image/webp" if final_path.suffix.lower() == ".webp" else "image/png"
 
     async def file_iterator():
-        with open(final_png_path, "rb") as f:
+        with open(final_path, "rb") as f:
             yield f.read()
 
     return StreamingResponse(
         file_iterator(),
-        media_type="image/png",
-        headers={"Content-Disposition": f"inline; filename=final.png"}
+        media_type=media_type,
+        headers={"Content-Disposition": f"inline; filename={final_path.name}"}
     )
 
 @app.post("/translate/batch/json", response_model=list[TranslationResponse], tags=["api", "json", "batch"])
@@ -221,8 +231,8 @@ async def batch_images(req: Request, data: BatchTranslateRequest):
             for i, ctx in enumerate(results):
                 if ctx.result:
                     img_byte_arr = io.BytesIO()
-                    ctx.result.save(img_byte_arr, format="PNG")
-                    zip_file.writestr(f"translated_{i+1}.png", img_byte_arr.getvalue())
+                    ctx.result.save(img_byte_arr, format="WEBP", quality=90, method=6)
+                    zip_file.writestr(f"translated_{i+1}.webp", img_byte_arr.getvalue())
         
         # Return ZIP file
         with open(tmp_file.name, 'rb') as f:
@@ -404,11 +414,8 @@ async def list_results():
     try:
         directories = []
         for item_path in result_dir.iterdir():
-            if item_path.is_dir():
-                # Check if final.png exists in this directory
-                final_png_path = item_path / "final.png"
-                if final_png_path.exists():
-                    directories.append(item_path.name)
+            if item_path.is_dir() and find_final_result(item_path) is not None:
+                directories.append(item_path.name)
         return {"directories": directories}
     except Exception as e:
         raise HTTPException(500, detail=f"Error listing results: {str(e)}")
@@ -423,12 +430,9 @@ async def clear_results():
     try:
         deleted_count = 0
         for item_path in result_dir.iterdir():
-            if item_path.is_dir():
-                # Check if final.png exists in this directory
-                final_png_path = item_path / "final.png"
-                if final_png_path.exists():
-                    shutil.rmtree(item_path)
-                    deleted_count += 1
+            if item_path.is_dir() and find_final_result(item_path) is not None:
+                shutil.rmtree(item_path)
+                deleted_count += 1
         
         return {"message": f"Deleted {deleted_count} result directories"}
     except Exception as e:
@@ -444,9 +448,7 @@ async def delete_result(folder_name: str):
         raise HTTPException(404, detail="Result directory not found")
     
     try:
-        # Check if final.png exists in this directory
-        final_png_path = folder_path / "final.png"
-        if not final_png_path.exists():
+        if find_final_result(folder_path) is None:
             raise HTTPException(404, detail="Result file not found")
         
         shutil.rmtree(folder_path)
