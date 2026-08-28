@@ -27,7 +27,7 @@ GPU_CONFIG = {
     "memory": 16384,  # 16GB RAM
     "timeout": 600,  # 10 minutes
     "min_containers": 0,  # Set to 1 or more for production
-    "max_inputs": 2,  # Limit concurrency to prevent OOM
+    "max_inputs": 2,  # Limit concurrency to prevent OOM; keep in sync with worker cap
     "scaledown_window": 300,  # 5 minutes idle timeout
 }
 

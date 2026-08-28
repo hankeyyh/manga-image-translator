@@ -105,11 +105,11 @@ def web():
     Main ASGI web application endpoint with worker subprocess.
 
     This function:
-    1. Starts worker subprocesses (mode=shared) that do actual ML processing
-    2. Imports and returns the FastAPI app (master) that handles HTTP requests
-    3. Manages the lifecycle of both master and worker processes
+    1. Spawns worker subprocesses immediately (before heavy master imports)
+    2. Imports the FastAPI app while workers boot in parallel
+    3. Waits for workers, then returns the ASGI app
 
-    Worker count is controlled by MT_WORKER_COUNT (default 1).
+    Worker count is MT_WORKER_COUNT, capped at 2 for single-GPU cold start.
 
     Architecture:
     - Master (FastAPI): Handles HTTP, queues tasks, returns results
@@ -123,10 +123,6 @@ def web():
     import atexit
     sys.path.insert(0, "/app")
 
-    from server.main import app as fastapi_app, prepare, get_worker_count
-    from server.instance import ExecutorInstance, executor_instances
-    from argparse import Namespace
-
     # Get nonce from environment (set by Modal secret)
     nonce = os.environ.get('MT_WEB_NONCE')
     if not nonce:
@@ -135,36 +131,45 @@ def web():
         nonce = secrets.token_hex(16)
         os.environ['MT_WEB_NONCE'] = nonce
 
-    # Worker configuration
     worker_host = "127.0.0.1"
-    worker_base_port = 5004  # Different from master port
-    worker_count = get_worker_count()
+    worker_base_port = 5004
+    # Extra workers on a single GPU mainly contend on import and slow cold start.
+    # Live secret may still have MT_WORKER_COUNT=8; cap here.
+    worker_count_cap = 2
+    raw_worker_count = os.getenv("MT_WORKER_COUNT", "2")
+    try:
+        worker_count = int(str(raw_worker_count).strip())
+    except (TypeError, ValueError):
+        print(f"Invalid MT_WORKER_COUNT={raw_worker_count!r}, falling back to 2")
+        worker_count = 2
+    if worker_count < 1:
+        print(f"MT_WORKER_COUNT={worker_count} < 1, falling back to 2")
+        worker_count = 2
+    if worker_count > worker_count_cap:
+        print(
+            f"MT_WORKER_COUNT={worker_count} capped to {worker_count_cap} "
+            "to reduce cold start on a single GPU"
+        )
+        worker_count = worker_count_cap
     worker_ports = [worker_base_port + i for i in range(worker_count)]
     worker_processes = []
 
-    # Check if GPU is available
-    use_gpu = False
-    try:
-        import torch
-        use_gpu = torch.cuda.is_available()
-        print(f"GPU available: {use_gpu}")
-    except Exception as e:
-        print(f"Could not detect GPU: {e}")
+    # This function is always scheduled with a GPU; skip torch import.
+    use_gpu = True
+    print(f"Using GPU: {use_gpu}")
 
     def build_worker_cmd(port: int):
-        cmd = [
+        return [
             sys.executable,
             '-m', 'manga_translator',
             'shared',
             '--host', worker_host,
             '--port', str(port),
             '--nonce', nonce,
+            '--use-gpu',
+            '--ignore-errors',
+            '--notify-progress-fail',
         ]
-        if use_gpu:
-            cmd.append('--use-gpu')
-        cmd.append('--ignore-errors')
-        cmd.append('--notify-progress-fail')
-        return cmd
 
     def terminate_workers():
         for proc in worker_processes:
@@ -175,30 +180,10 @@ def web():
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
-    def wait_for_worker(port: int, proc: subprocess.Popen):
-        print(f"Waiting for worker HTTP server on port {port}...")
-        max_wait_time = 120
-        check_interval = 5
-        elapsed = 0
-        while elapsed < max_wait_time:
-            if proc.poll() is not None:
-                print(f"Worker on port {port} died during startup! Exit code: {proc.returncode}")
-                return False
-            try:
-                import httpx
-                response = httpx.get(
-                    f"http://{worker_host}:{port}/is_locked",
-                    timeout=3.0
-                )
-                if response.status_code == 200:
-                    print(f"Worker on port {port} is ready! (took {elapsed}s)")
-                    return True
-            except Exception as e:
-                print(f"Worker on port {port} not ready yet (waited {elapsed}s): {e}")
-            time.sleep(check_interval)
-            elapsed += check_interval
-        print(f"Worker on port {port} failed to start within {max_wait_time}s")
-        return False
+    def cleanup_workers():
+        print("Cleaning up worker subprocesses...")
+        terminate_workers()
+        print("Worker subprocesses terminated")
 
     print(f"Starting {worker_count} worker subprocess(es)")
     for port in worker_ports:
@@ -207,10 +192,45 @@ def web():
         proc = subprocess.Popen(
             worker_cmd,
             cwd="/app",
-            stdout=None,  # Inherit parent's stdout (shows in Modal logs)
-            stderr=None,  # Inherit parent's stderr (shows in Modal logs)
+            stdout=None,
+            stderr=None,
         )
         worker_processes.append(proc)
+
+    atexit.register(cleanup_workers)
+
+    # Heavy imports overlap with worker process boot.
+    from argparse import Namespace
+    import httpx
+    from server.main import app as fastapi_app, prepare
+    from server.instance import ExecutorInstance, executor_instances
+
+    def wait_for_worker(port: int, proc: subprocess.Popen):
+        print(f"Waiting for worker HTTP server on port {port}...")
+        max_wait_time = 120
+        check_interval = 0.5
+        started = time.monotonic()
+        last_log_at = -999.0
+        url = f"http://{worker_host}:{port}/is_locked"
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed >= max_wait_time:
+                break
+            if proc.poll() is not None:
+                print(f"Worker on port {port} died during startup! Exit code: {proc.returncode}")
+                return False
+            try:
+                response = httpx.get(url, timeout=0.5)
+                if response.status_code == 200:
+                    print(f"Worker on port {port} is ready! (took {elapsed:.1f}s)")
+                    return True
+            except Exception as e:
+                if elapsed - last_log_at >= 5.0:
+                    print(f"Worker on port {port} not ready yet (waited {elapsed:.1f}s): {e}")
+                    last_log_at = elapsed
+            time.sleep(check_interval)
+        print(f"Worker on port {port} failed to start within {max_wait_time}s")
+        return False
 
     for port, proc in zip(worker_ports, worker_processes):
         if not wait_for_worker(port, proc):
@@ -218,26 +238,15 @@ def web():
             raise RuntimeError(f"Worker subprocess on port {port} failed to start")
         print(f"Worker subprocess started with PID: {proc.pid} port={port}")
 
-    # Register worker instances with master
-    # This is done automatically by server.main when --start-instance is used,
-    # but since we're starting manually, we need to do it ourselves
     for port in worker_ports:
         executor_instances.register(ExecutorInstance(ip=worker_host, port=port))
         print(f"Registered worker at {worker_host}:{port}")
 
-    def cleanup_workers():
-        print("Cleaning up worker subprocesses...")
-        terminate_workers()
-        print("Worker subprocesses terminated")
-
-    atexit.register(cleanup_workers)
-
-    # Prepare the server (initialize upload-cache, etc.)
     args = Namespace(
         host=worker_host,
         port=worker_base_port,
         nonce=nonce,
-        start_instance=False,  # We already started it manually
+        start_instance=False,
         use_gpu=use_gpu,
         use_gpu_limited=False,
         ignore_errors=True,
