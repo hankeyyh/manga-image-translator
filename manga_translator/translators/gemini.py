@@ -480,6 +480,10 @@ class GeminiTranslator(CommonGPTTranslator):
             else:
                 self.token_count += response.usage_metadata.prompt_token_count
                 self.token_count_last = response.usage_metadata.total_token_count
+                self._record_token_usage(
+                    self.token_count_last,
+                    getattr(self, "_current_model_name", None) or GEMINI_MODEL,
+                )
             
             self.logger.debug(f'-- GPT Response --\n' + response.text)
 
@@ -583,6 +587,10 @@ class _GeminiTranslator_json (_CommonGPTTranslator_JSON):
             else:
                 self.translator.token_count += response.usage_metadata.prompt_token_count
                 self.translator.token_count_last = response.usage_metadata.total_token_count
+                self.translator._record_token_usage(
+                    self.translator.token_count_last,
+                    getattr(self.translator, "_current_model_name", None) or GEMINI_MODEL,
+                )
 
             self.logger.debug(  '-- GPT Response --\n' + 
                                 self.ppJSON(response.text) + 

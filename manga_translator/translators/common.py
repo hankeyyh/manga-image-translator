@@ -134,6 +134,18 @@ class CommonTranslator(InfererModule):
             return False
         return True
 
+    def _metrics_provider(self) -> str:
+        name = type(self).__name__
+        if name.endswith("Translator"):
+            name = name[: -len("Translator")]
+        return name.lower() or "unknown"
+
+    def _record_token_usage(self, tokens: int, model: str = "") -> None:
+        if tokens <= 0:
+            return
+        from ..utils.metrics import record_api_tokens
+        record_api_tokens(tokens, self._metrics_provider(), model)
+
     def parse_language_codes(self, from_lang: str, to_lang: str, fatal: bool = False) -> Tuple[str, str]:
         if not self.supports_languages(from_lang, to_lang, fatal):
             return None, None
@@ -185,7 +197,14 @@ class CommonTranslator(InfererModule):
 
             # Translate
             from_lang_code, to_lang_code = self.parse_language_codes(from_lang, to_lang, fatal=True)
-            _translations = await self._translate(model_name, from_lang_code, to_lang_code, queries)
+            from ..utils.metrics import record_api_request
+            provider = self._metrics_provider()
+            try:
+                _translations = await self._translate(model_name, from_lang_code, to_lang_code, queries)
+                record_api_request(provider, "ok")
+            except Exception:
+                record_api_request(provider, "error")
+                raise
 
             # Extend returned translations list to have the same size as queries
             if len(_translations) < len(queries):

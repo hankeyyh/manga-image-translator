@@ -18,11 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from manga_translator import Config
+from manga_translator.utils.metrics import record_request, setup_metrics
 from server.instance import ExecutorInstance, executor_instances
 from server.myqueue import task_queue
 from server.request_extraction import get_ctx, while_batch_streaming, while_streaming, TranslateRequest, BatchTranslateRequest, get_batch_ctx
 from server.to_json import to_translation, TranslationResponse
 
+setup_metrics()
 app = FastAPI()
 nonce = None
 
@@ -44,6 +46,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def otel_request_metrics(request: Request, call_next):
+    if not request.url.path.startswith("/translate"):
+        return await call_next(request)
+    outcome = "success"
+    try:
+        response = await call_next(request)
+        if getattr(response, "status_code", 200) >= 400:
+            outcome = "error"
+        return response
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        record_request(request.url.path, outcome)
 
 # 添加result文件夹静态文件服务
 if RESULT_ROOT.exists():

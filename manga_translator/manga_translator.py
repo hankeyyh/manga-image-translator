@@ -27,6 +27,7 @@ from .utils import (
     is_valuable_text,
     sort_regions,
 )
+from .utils.metrics import create_progress_hook, setup_metrics
 
 from .detection import dispatch as dispatch_detection, prepare as prepare_detection, unload as unload_detection
 from .upscaling import dispatch as dispatch_upscaling, prepare as prepare_upscaling, unload as unload_upscaling
@@ -141,6 +142,8 @@ class MangaTranslator:
 
         self._progress_hooks = []
         self._add_logger_hook()
+        setup_metrics()
+        self.add_progress_hook(create_progress_hook())
 
         params = params or {}
         

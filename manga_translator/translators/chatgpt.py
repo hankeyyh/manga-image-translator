@@ -612,6 +612,7 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
         timeout_attempt = 0
         ratelimit_attempt = 0
         server_error_attempt = 0
+        from ..utils.metrics import record_api_retry
 
         while True:
             await self._ratelimit_sleep()
@@ -630,6 +631,7 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
                                 f"OpenAI request timed out after {self._TIMEOUT_RETRY_ATTEMPTS} attempts."
                             )
                         self.logger.warning(f"Request timed out, retrying... (attempt={timeout_attempt})")
+                        record_api_retry(self._metrics_provider(), "timeout")
                         req_task.cancel()
                         break
                 else:
@@ -642,6 +644,7 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
                 if ratelimit_attempt > self._RATELIMIT_RETRY_ATTEMPTS:
                     raise
                 self.logger.warning(f"Hit RateLimit, retrying... (attempt={ratelimit_attempt})")
+                record_api_retry(self._metrics_provider(), "ratelimit")
                 await asyncio.sleep(2)
 
             except openai.APIError as e:
@@ -651,6 +654,7 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
                     self.logger.error("Server error, giving up after several attempts.")
                     raise
                 self.logger.warning(f"Server error: {str(e)}. Retrying... (attempt={server_error_attempt})")
+                record_api_retry(self._metrics_provider(), "server_error")
                 await asyncio.sleep(1)
 
             except Exception as e:
@@ -781,6 +785,10 @@ class OpenAITranslator(ConfigGPT, CommonTranslator):
         else:
             self.token_count += response.usage.total_tokens
             self.token_count_last = response.usage.total_tokens
+            self._record_token_usage(
+                self.token_count_last,
+                getattr(self, "_current_model_name", None) or OPENAI_MODEL,
+            )
         
         response_text = cleaned_text
         self.print_boxed(response_text, border_color="green", title="GPT Response")          

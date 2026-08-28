@@ -63,3 +63,7 @@ regex
 rusty-manga-image-translator
 python-bidi
 supabase
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+googleapis-common-protos>=1.56,<1.70

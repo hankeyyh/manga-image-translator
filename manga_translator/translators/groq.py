@@ -136,6 +136,10 @@ class GroqTranslator(CommonTranslator):
         # Update token counts
         self.token_count += response.usage.total_tokens
         self.token_count_last = response.usage.total_tokens
+        self._record_token_usage(
+            self.token_count_last,
+            getattr(self, "_current_model_name", None) or self.model,
+        )
         
         # Extract and clean the content
         content = response.choices[0].message.content.strip()

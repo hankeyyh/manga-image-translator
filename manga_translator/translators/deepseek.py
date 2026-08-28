@@ -262,6 +262,10 @@ class DeepseekTranslator(CommonGPTTranslator):
             else:
                 self.token_count += response.usage.total_tokens
                 self.token_count_last = response.usage.total_tokens
+                self._record_token_usage(
+                    self.token_count_last,
+                    getattr(self, "_current_model_name", None) or DEEPSEEK_MODEL,
+                )
             
             # 获取响应文本
             # Get the response text

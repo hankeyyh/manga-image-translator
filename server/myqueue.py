@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from typing import List, Optional
 
 from PIL import Image
@@ -7,6 +8,12 @@ from fastapi import HTTPException
 from fastapi.requests import Request
 
 from manga_translator import Config
+from manga_translator.utils.metrics import (
+    record_queue_wait,
+    record_request_duration,
+    set_queue_depth,
+    set_workers_busy,
+)
 from server.instance import executor_instances
 from server.sent_data_internal import NotifyType
 
@@ -66,6 +73,7 @@ class TaskQueue:
 
     def add_task(self, task: QueueElement | BatchQueueElement):
         self.queue.append(task)
+        _publish_queue_metrics()
 
     def get_pos(self, task: QueueElement | BatchQueueElement) -> Optional[int]:
         try:
@@ -76,6 +84,7 @@ class TaskQueue:
         self.queue = [task for task in self.queue if not await task.is_client_disconnected()]
         self.queue_event.set()
         self.queue_event.clear()
+        _publish_queue_metrics()
 
     async def remove(self, task: QueueElement | BatchQueueElement):
         self.queue.remove(task)
@@ -86,65 +95,83 @@ class TaskQueue:
 
 task_queue = TaskQueue()
 
+
+def _publish_queue_metrics():
+    set_queue_depth(len(task_queue.queue))
+    set_workers_busy(sum(1 for item in executor_instances.list if item.busy))
+
+
 async def wait_in_queue(task: QueueElement | BatchQueueElement, notify: NotifyType):
     """Will get task position report it. If its in the range of translators then it will try to aquire an instance(blockig) and sent a task to it. when done the item will be removed from the queue and result will be returned"""
-    while True:
-        queue_pos = task_queue.get_pos(task)
-        if queue_pos is None:
+    started = time.perf_counter()
+    outcome = "success"
+    task_type = "batch" if isinstance(task, BatchQueueElement) else "single"
+    try:
+        while True:
+            queue_pos = task_queue.get_pos(task)
+            if queue_pos is None:
+                outcome = "disconnect"
+                if notify:
+                    return
+                else:
+                    raise HTTPException(500, detail="User is no longer connected")  # just for the logs
             if notify:
-                return
+                notify(3, str(queue_pos).encode('utf-8'))
+            if queue_pos < executor_instances.free_executors():
+                if await task.is_client_disconnected():
+                    outcome = "disconnect"
+                    await task_queue.update_event()
+                    if notify:
+                        return
+                    else:
+                        raise HTTPException(500, detail="User is no longer connected") #just for the logs
+
+                instance = await executor_instances.find_executor()
+                record_queue_wait(time.perf_counter() - started, task_type)
+                _publish_queue_metrics()
+                await task_queue.remove(task)
+                if notify:
+                    notify(4, b"")
+
+                try:
+                    # Process batch translation task
+                    if isinstance(task, BatchQueueElement):
+                        if notify:
+                            await instance.sent_batch_stream(task.images, task.config, task.batch_size, notify)
+                        else:
+                            result = await instance.sent_batch(task.images, task.config, task.batch_size)
+                    else:
+                        # Process single translation task
+                        if notify:
+                            await instance.sent_stream(task.image, task.config, notify)
+                        else:
+                            result = await instance.sent(task.image, task.config)
+
+                    await executor_instances.free_executor(instance)
+
+                    if notify:
+                        return
+                    else:
+                        return result
+
+                except Exception as e:
+                    outcome = "error"
+                    # 确保实例被释放
+                    await executor_instances.free_executor(instance)
+
+                    # 如果是连接错误，发送友好的错误消息
+                    if "Cannot connect to host" in str(e) or "Connection refused" in str(e):
+                        error_msg = "Translation service is starting up, please wait a moment and try again."
+                    else:
+                        error_msg = f"Translation failed: {str(e)}"
+
+                    if notify:
+                        notify(2, error_msg.encode('utf-8'))
+                        return
+                    else:
+                        raise HTTPException(500, detail=error_msg)
             else:
-                raise HTTPException(500, detail="User is no longer connected")  # just for the logs
-        if notify:
-            notify(3, str(queue_pos).encode('utf-8'))
-        if queue_pos < executor_instances.free_executors():
-            if await task.is_client_disconnected():
-                await task_queue.update_event()
-                if notify:
-                    return
-                else:
-                    raise HTTPException(500, detail="User is no longer connected") #just for the logs
-
-            instance = await executor_instances.find_executor()
-            await task_queue.remove(task)
-            if notify:
-                notify(4, b"")
-
-            try:
-                # Process batch translation task
-                if isinstance(task, BatchQueueElement):
-                    if notify:
-                        await instance.sent_batch_stream(task.images, task.config, task.batch_size, notify)
-                    else:
-                        result = await instance.sent_batch(task.images, task.config, task.batch_size)
-                else:
-                    # Process single translation task
-                    if notify:
-                        await instance.sent_stream(task.image, task.config, notify)
-                    else:
-                        result = await instance.sent(task.image, task.config)
-
-                await executor_instances.free_executor(instance)
-
-                if notify:
-                    return
-                else:
-                    return result
-
-            except Exception as e:
-                # 确保实例被释放
-                await executor_instances.free_executor(instance)
-
-                # 如果是连接错误，发送友好的错误消息
-                if "Cannot connect to host" in str(e) or "Connection refused" in str(e):
-                    error_msg = "Translation service is starting up, please wait a moment and try again."
-                else:
-                    error_msg = f"Translation failed: {str(e)}"
-
-                if notify:
-                    notify(2, error_msg.encode('utf-8'))
-                    return
-                else:
-                    raise HTTPException(500, detail=error_msg)
-        else:
-            await task_queue.wait_for_event()
+                await task_queue.wait_for_event()
+    finally:
+        record_request_duration(time.perf_counter() - started, task_type, outcome)
+        _publish_queue_metrics()
