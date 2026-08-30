@@ -118,6 +118,7 @@ def positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"value must be positive int: {value}")
     return n
 
+
 def validate_bench_config(config: object, config_path: Path) -> dict:
     if not isinstance(config, dict):
         raise SystemExit(f"{config_path}: config 必须是 JSON object")
@@ -160,13 +161,15 @@ def print_time_percent(name: str, samples: list[float]) -> None:
     )
 
 
-def close_stage(
-    stage_start: tuple[str, float] | None, now: float, stats: dict
-) -> None:
+def close_stage(stage_start: tuple[str, float] | None, now: float, stats: dict) -> None:
     if stage_start is None:
         return
     name, t0 = stage_start
     stats[STAGE_TO_STAT[name]].append(now - t0)
+
+
+def log_req(worker: int, query: int, msg: str) -> None:
+    print(f"[w{worker}#{query}] {msg}", flush=True)
 
 
 # LEARN:
@@ -205,10 +208,7 @@ def parse_arguments():
         help="每发几张图；建议先对齐生产的 2",
     )
     parser.add_argument(
-        "--duration", 
-        default=300, 
-        type=positive_int, 
-        help="墙钟时长，单位秒"
+        "--duration", default=300, type=positive_int, help="墙钟时长，单位秒"
     )
     parser.add_argument(
         "--timeout",
@@ -237,8 +237,25 @@ async def worker(
         config["image_identifiers"] = [
             f"{idx}-{i}-{image_idx}" for image_idx in range(len(batch))
         ]
-        await run_once(client, args, batch, config, stats)
+        names = ",".join(name for name, _ in batch)
+        remain = max(0.0, stop_at - time.monotonic())
+        log_req(
+            idx,
+            i,
+            f"start n={len(batch)} images={names} ids={','.join(config['image_identifiers'])} remain={remain:.0f}s",
+        )
+        t0 = time.monotonic()
+        kind = await run_once(client, args, batch, config, stats, idx, i)
+        log_req(idx, i, f"finish {kind} wall={time.monotonic() - t0:.1f}s")
         i += 1
+
+
+def _decode_frame(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def _since(t0: float, now: float | None = None) -> str:
+    return f"+{(now if now is not None else time.monotonic()) - t0:.1f}s"
 
 
 async def run_once(
@@ -247,7 +264,9 @@ async def run_once(
     images: list[tuple[str, bytes]],
     config: dict,
     stats: dict,
-):
+    worker_idx: int,
+    query_i: int,
+) -> str:
     url = f'{args.url.rstrip("/")}/translate/batch/image/stream/web'
     got_body = False
     try:
@@ -265,7 +284,12 @@ async def run_once(
             ) as response:
                 if response.status_code != 200:
                     stats["counters"]["http_fail"] += 1
-                    return
+                    log_req(
+                        worker_idx,
+                        query_i,
+                        f"{_since(submit_at)} http_fail status={response.status_code}",
+                    )
+                    return "http_fail"
 
                 # bytes 不能修改，如果你循环拼接大量字节，不要用 b1+b2（每次生成新对象），优先用 bytearray 累积，最后转 bytes。
                 buf = bytearray()
@@ -282,47 +306,124 @@ async def run_once(
                             break
                         data = buf[5:framesize]
                         buf = buf[framesize:]
-                        if status == 1:  # 过程：阶段名 / image_failed / image_completed / 其它
+                        if (
+                            status == 1
+                        ):  # 过程：阶段名 / image_failed / image_completed / 其它
                             now = time.monotonic()
                             if data.startswith(b"image_failed:"):
                                 stats["counters"]["image_failed"] += 1
                                 stage_start = None
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} {_decode_frame(data)}",
+                                )
                                 continue
-                            state = data.decode("utf-8", errors="replace")
+                            state = _decode_frame(data)
+                            if stage_start is not None:
+                                prev, t0 = stage_start
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} {state} ({prev}={now - t0:.2f}s)",
+                                )
+                            else:
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} {state}",
+                                )
                             close_stage(stage_start, now, stats)
-                            stage_start = (state, now) if state in STAGE_TO_STAT else None
+                            stage_start = (
+                                (state, now) if state in STAGE_TO_STAT else None
+                            )
                             continue
-                        if status == 2: # 整体异常报错
+                        if status == 2:  # 整体异常报错
                             stats["counters"]["stream_error"] += 1
-                            return
+                            log_req(
+                                worker_idx,
+                                query_i,
+                                f"{_since(submit_at)} stream_error {_decode_frame(data)}",
+                            )
+                            return "stream_error"
                         if status == 3:  # 排队中
+                            pos = _decode_frame(data)
                             if queue_start == 0:
                                 stats["counters"]["queue_seen"] += 1
                                 queue_start = time.monotonic()
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, queue_start)} queue pos={pos}",
+                                )
+                            else:
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at)} queue pos={pos}",
+                                )
                             continue
                         if status == 4:  # 即将开始
-                            if queue_start != 0: # 排队时间
-                                queue_wait = time.monotonic() - queue_start
+                            now = time.monotonic()
+                            if queue_start != 0:  # 排队时间
+                                queue_wait = now - queue_start
                                 stats["queue_waits"].append(queue_wait)
+                                client_pending = now - submit_at
+                                stats["client_pending"].append(client_pending)
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} processing queue_wait={queue_wait:.2f}s, client_pending={client_pending:.2f}s",
+                                )
+                            else:
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} processing",
+                                )
                             continue
                         if status == 5:  # 整体翻译完成
-                            close_stage(stage_start, time.monotonic(), stats)
+                            now = time.monotonic()
+                            if stage_start is not None:
+                                prev, t0 = stage_start
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} batch_completed ({prev}={now - t0:.2f}s) latency={now - submit_at:.2f}s",
+                                )
+                            else:
+                                log_req(
+                                    worker_idx,
+                                    query_i,
+                                    f"{_since(submit_at, now)} batch_completed latency={now - submit_at:.2f}s",
+                                )
+                            close_stage(stage_start, now, stats)
                             stats["counters"]["stream_ok"] += 1
-                            # 完整处理时间
-                            latency = time.monotonic() - submit_at
-                            stats["latencies"].append(latency)
-                            return
+                            stats["latencies"].append(now - submit_at)
+                            return "ok"
                 if got_body:
                     stats["counters"]["stream_error"] += 1
-                else:
-                    stats["counters"]["http_fail"] += 1
-    except httpx.HTTPError:
+                    log_req(
+                        worker_idx,
+                        query_i,
+                        f"{_since(submit_at)} stream_error closed before batch_completed",
+                    )
+                    return "stream_error"
+                stats["counters"]["http_fail"] += 1
+                log_req(worker_idx, query_i, f"{_since(submit_at)} http_fail no body")
+                return "http_fail"
+    except httpx.HTTPError as e:
         if got_body:
             stats["counters"]["stream_error"] += 1
-        else:
-            stats["counters"]["http_fail"] += 1
+            log_req(worker_idx, query_i, f"stream_error {e}")
+            return "stream_error"
+        stats["counters"]["http_fail"] += 1
+        log_req(worker_idx, query_i, f"http_fail {e}")
+        return "http_fail"
     except TimeoutError:
         stats["counters"]["timeout"] += 1
+        log_req(worker_idx, query_i, f"timeout after {args.timeout}s")
+        return "timeout"
 
 
 async def benchpress(args, image_batchs: list[list[tuple[str, bytes]]], config: dict):
@@ -342,6 +443,7 @@ async def benchpress(args, image_batchs: list[list[tuple[str, bytes]]], config: 
             "queue_seen": 0,
         },
         "latencies": [],
+        "client_pending": [],  # 从提交->开始翻译
         "queue_waits": [],
         "upscaling_latencies": [],
         "detection_latencies": [],
@@ -375,7 +477,8 @@ async def benchpress(args, image_batchs: list[list[tuple[str, bytes]]], config: 
                 error_rate, n_err, submitted
             )
         )
-        print_time_percent("latency", stats["latencies"])
+        print_time_percent("whole_latency", stats["latencies"])
+        print_time_percent("client_pending", stats["client_pending"])
         print_time_percent("queue_wait", stats["queue_waits"])
         for stage, key in STAGE_TO_STAT.items():
             print_time_percent(stage, stats[key])
