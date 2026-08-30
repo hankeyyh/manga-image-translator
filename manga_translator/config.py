@@ -154,6 +154,7 @@ class Upscaler(str, Enum):
 class SavePlace(str, Enum):
     local = "local"
     supabase_storage = "supabase_storage"
+    none = "none"
 
 
 class RenderConfig(BaseModel):
@@ -331,7 +332,7 @@ class OcrConfig(BaseModel):
 
 class SaveConfig(BaseModel):
     save_to: SavePlace = SavePlace.local
-    """save to local or other storage"""
+    """save to local / supabase / none (skip persist, for loadtest)"""
     supabase_storage_bucket: str = None
     """when save to supabase storage, set bucket here"""
     supabase_storage_path: str = None

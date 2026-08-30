@@ -677,15 +677,16 @@ class MangaTranslator:
                 logger.error(f"Error saving final.webp debug image: {e}")
                 logger.debug(f"Exception details: {traceback.format_exc()}")
 
-        # Web流式模式优化：保存final.webp并使用占位符
+        # Web流式模式优化：按 save_to 落盘（或跳过），再换成占位符
         if ctx.result and not self.result_sub_folder and hasattr(self, '_is_streaming_mode') and self._is_streaming_mode:
-            await self._report_progress('saving_result')
-
-            # 根据config决定保存本地 or supabase storage
             if config.save.save_to == SavePlace.supabase_storage:
+                await self._report_progress('saving_result')
                 await self._save_streaming_result_to_supabase(ctx.result, config)
             elif config.save.save_to == SavePlace.local:
+                await self._report_progress('saving_result')
                 await self._save_streaming_result_locally(ctx.result, config)
+            elif config.save.save_to == SavePlace.none:
+                await self._notify_image_completed(config, "none")
 
             # 创建占位符结果并立即返回
             placeholder = Image.new('RGB', (1, 1), color='white')

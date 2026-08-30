@@ -60,3 +60,6 @@ key.pem
 .modal_cache/
 deploy/__pycache__/
 *.pyc
+
+bench/fixtures
+bench/configs
