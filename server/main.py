@@ -7,6 +7,7 @@ import subprocess
 import sys
 from argparse import Namespace
 import asyncio
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -28,6 +29,52 @@ setup_metrics()
 app = FastAPI()
 nonce = None
 
+
+class UploadTimingMiddleware:
+    """ASGI：量 request body 从首块到末块的墙钟，写入 X-Upload-Seconds。
+
+    不用 BaseHTTPMiddleware（会缓冲 stream）。若 uvicorn 把整个 body
+    合成一块再交给 app，该值会接近 0；此时以客户端 header 延迟为准。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        t_first: float | None = None
+        t_last: float | None = None
+
+        async def recv():
+            nonlocal t_first, t_last
+            message = await receive()
+            if message["type"] == "http.request":
+                now = time.perf_counter()
+                if t_first is None:
+                    t_first = now
+                if not message.get("more_body", False):
+                    t_last = now
+            return message
+
+        async def send_wrapper(message):
+            if (
+                message["type"] == "http.response.start"
+                and t_first is not None
+                and t_last is not None
+            ):
+                upload = t_last - t_first
+                headers = list(message.get("headers", []))
+                headers.append(
+                    (b"x-upload-seconds", f"{upload:.3f}".encode("ascii"))
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, recv, send_wrapper)
+
 BASE_DIR = Path(__file__).resolve().parent
 RESULT_ROOT = (BASE_DIR.parent / "result").resolve()
 RESULT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -45,6 +92,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Upload-Seconds"],
 )
 
 @app.middleware("http")
@@ -62,6 +110,11 @@ async def otel_request_metrics(request: Request, call_next):
         raise
     finally:
         record_request(request.url.path, outcome)
+
+
+# 后注册的在最外层，直接看到 uvicorn 的 http.request 分块
+app.add_middleware(UploadTimingMiddleware)
+
 
 # 添加result文件夹静态文件服务
 if RESULT_ROOT.exists():
