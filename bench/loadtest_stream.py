@@ -13,62 +13,20 @@ Stream 帧：[1B status][4B size big-endian][nB data]
   超过 --timeout → 取消 reader，记 timeout
   HTTP 非 2xx / 无 body → http_fail
 
-输入:
-  BASE_URL
-  图片目录 / fixture
-  config.json          // save.save_to=none，不落盘、不写对象存储
-  concurrency          // 同时 in-flight 批次数，这是真正的压测旋钮
-  batch_size           // 每发几张图，对齐生产 CONCURRENT_IMAGES=2
-  duration             // 墙钟时长
-  timeout_per_request  // 单次 stream 上限，必须有；现网 parse 没有超时
-  ramp                 // 可选：前 T 秒从 1 升到 concurrency
+报告：
+GPU: A10, CPU: 4, Memory: 16GB
+此配置下 8worker, 内存负载 12GB。如果 4worker, 内存负载 8GB。
+下面的数据在单台容器 4worker, timeout=60s下测得:
+- concurrency 16, batch-size 2。翻译流程:8s, timeout错误率:26, steramerr错误率:0, latency:47
+- concurrency 8, batch-size 2。 翻译流程:8s, timeout错误率:0, steramerr错误率:0, latency:23
+- concurrency 4, batch-size 2。 翻译流程:8s, timeout错误率:0, steramerr错误率:0, latency:15
 
-共享状态:
-  stop_at = now + duration
-  counters = {
-    submitted, http_fail, stream_ok, stream_error,
-    image_failed, timeout, queue_seen
-  }
-  latencies = []         // submit→batch_completed
-  queue_waits = []       // 首次 status=3 到 status=4
-  *_latencies = []       // 相邻 status=1 阶段之间的墙钟；未完成的阶段不计入
+-- concurrency 8, batch-size 4。翻译流程:8s, timeout错误率:0, steramerr错误率:0, latency:41
+-- concurrency 4, batch-size 4。翻译流程:8s, timeout错误率:0, steramerr错误率:0, latency:26
 
-主流程:
-  预读图片到内存（避免循环里反复读盘）
-  校验 len(images_per_batch) == len(config.image_identifiers)
+-- concurrency 4, batch-size 8。翻译流程:8s, timeout错误率:0, steramerr错误率:0, latency:46
 
-  启动 concurrency 个 worker 协程（或线程）
-  等到时 → 不再发新请求，等 in-flight 收尾（或硬停）
-  打印 counters / p50 p95 / 错误分类
-
-worker:
-  while now < stop_at:
-    batch = 从 fixture 取 batch_size 张（可重复同一批）
-    req_id = 新 id
-    把 config.image_identifiers 换成本次 req_id，避免服务端串单
-
-    t0 = now
-    result = run_one(batch, config, timeout_per_request)
-    记录 latency、result.kind
-    // 立刻进入下一轮，不要 sleep——空窗会让 Modal 看起来「没负载」
-
-run_one:
-  POST multipart:
-    images[] = batch
-    config   = json
-
-  若 HTTP 非 2xx 或无 body → 记 http_fail，返回
-
-  循环读帧，直到:
-    status=5  → stream_ok
-    status=2  → stream_error
-    status=1 阶段名 → 记下一段到达之间的耗时；image_failed: 记计数并丢弃未完成阶段
-    status=3  → 记 queue_seen / 排队时刻
-    status=4  → 记开始处理时刻
-    超时      → 取消 reader，记 timeout
-    连接断开且未见 status=5 → 记 stream_error（对应现网 "stream closed before batch_completed"）
-
-  不要把 status=3 算进错误率；那是容量信号
+期望stream latency在30s左右, 单次容量尽可能大。最后决定 max_inputs=8, batch-size=4
 """
 
 import argparse
@@ -82,6 +40,8 @@ import copy
 BENCH_DIR = Path(__file__).resolve().parent  # .../manga-image-translator/bench
 DEFAULT_IMAGES = BENCH_DIR / "fixtures"
 DEFAULT_CONFIG = BENCH_DIR / "configs/no_save.json"
+LOCAL_URL = "http://127.0.0.1:8000"
+REMOTE_URL = "https://hankeyyh--manga-translator-web.modal.run"
 
 IMAGE_SUFFIX = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}
 
@@ -180,8 +140,16 @@ def parse_arguments():
         description="Modal web 接口压测",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--url", type=str, required=True, help="Modal 或本地 base URL，不要带 path"
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
+        "--local",
+        action="store_true",  # 命令行里出现它就是 True，不出现就是 False
+        help=f"打本地 {LOCAL_URL}",
+    )
+    target.add_argument(
+        "--remote",
+        action="store_true",
+        help=f"打 Modal {REMOTE_URL}",
     )
     parser.add_argument(
         "--images",
@@ -203,7 +171,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--batch-size",
-        default=1,
+        default=2,
         type=positive_int,
         help="每发几张图；建议先对齐生产的 2",
     )
@@ -212,11 +180,13 @@ def parse_arguments():
     )
     parser.add_argument(
         "--timeout",
-        default=180,
+        default=60,
         type=positive_int,
         help="单次 stream 上限秒数；超时记 timeout 并取消 reader",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.url = LOCAL_URL if args.local else REMOTE_URL
+    return args
 
 
 async def worker(
@@ -282,6 +252,26 @@ async def run_once(
                 data={"config": json.dumps(config)},
                 files=[("images", (name, data)) for name, data in images],
             ) as response:
+                # stream() 进入时 HTTP 响应头已到；body 第一帧还没读。
+                # header = 上传 + 冷启动 + 服务端 Image.open，直到 return StreamingResponse。
+                header_at = time.monotonic()
+                header_latency = header_at - submit_at
+                stats["header_latencies"].append(header_latency)
+                # 服务端 ASGI 量的 request body 首块→末块；uvicorn 合成一块时会≈0，这时看 header。
+                upload_s = None
+                upload_hdr = response.headers.get("x-upload-seconds")
+                if upload_hdr:
+                    try:
+                        upload_s = float(upload_hdr)
+                        stats["upload_seconds"].append(upload_s)
+                    except ValueError:
+                        pass
+                upload_note = f" upload={upload_s:.3f}s" if upload_s is not None else ""
+                log_req(
+                    worker_idx,
+                    query_i,
+                    f"{_since(submit_at, header_at)} header status={response.status_code}{upload_note}",
+                )
                 if response.status_code != 200:
                     stats["counters"]["http_fail"] += 1
                     log_req(
@@ -368,12 +358,10 @@ async def run_once(
                             if queue_start != 0:  # 排队时间
                                 queue_wait = now - queue_start
                                 stats["queue_waits"].append(queue_wait)
-                                client_pending = now - submit_at
-                                stats["client_pending"].append(client_pending)
                                 log_req(
                                     worker_idx,
                                     query_i,
-                                    f"{_since(submit_at, now)} processing queue_wait={queue_wait:.2f}s, client_pending={client_pending:.2f}s",
+                                    f"{_since(submit_at, now)} processing queue_wait={queue_wait:.2f}s header={header_latency:.2f}s",
                                 )
                             else:
                                 log_req(
@@ -434,25 +422,26 @@ async def benchpress(args, image_batchs: list[list[tuple[str, bytes]]], config: 
 
     stats = {
         "counters": {
-            "submitted": 0,
-            "http_fail": 0,
-            "stream_ok": 0,
-            "stream_error": 0,
-            "image_failed": 0,
-            "timeout": 0,
-            "queue_seen": 0,
+            "submitted": 0,  # 发出的批次数（含随后失败的）
+            "http_fail": 0,  # HTTP 非 2xx / 无 body / 读到第一帧前断连
+            "stream_ok": 0,  # 收到 status=5，整批完成
+            "stream_error": 0,  # status=2，或断连且未见 5
+            "image_failed": 0,  # status=1 且 image_failed:；请求可能仍继续
+            "timeout": 0,  # 超过 --timeout，取消 reader
+            "queue_seen": 0,  # 见过 status=3；容量信号，不算错误
         },
-        "latencies": [],
-        "client_pending": [],  # 从提交->开始翻译
-        "queue_waits": [],
-        "upscaling_latencies": [],
-        "detection_latencies": [],
-        "ocr_latencies": [],
-        "textline_merge_latencies": [],
-        "translation_latencies": [],
-        "inpaint_latencies": [],
-        "render_latencies": [],
-        "downscaling_latencies": [],
+        "latencies": [],  # 整段墙钟：submit → status=5
+        "header_latencies": [],  # submit → HTTP 响应头
+        "upload_seconds": [],  # 服务端 X-Upload-Seconds：ASGI 读完 request body
+        "queue_waits": [],  # 首次 status=3 → status=4
+        "upscaling_latencies": [],  # status=1 阶段 upscaling 持续时长
+        "detection_latencies": [],  # status=1 阶段 detection
+        "ocr_latencies": [],  # status=1 阶段 ocr
+        "textline_merge_latencies": [],  # status=1 阶段 textline_merge
+        "translation_latencies": [],  # status=1 阶段 translating（每批一次）
+        "inpaint_latencies": [],  # status=1 阶段 inpainting
+        "render_latencies": [],  # status=1 阶段 rendering
+        "downscaling_latencies": [],  # status=1 阶段 downscaling
     }
 
     # args.timeout 决定stream api整体处理时间，在run_once中设置。不需要 connect/read/write timeout
@@ -467,21 +456,23 @@ async def benchpress(args, image_batchs: list[list[tuple[str, bytes]]], config: 
         print("Shutdown by Ctrl+C")
     finally:
         counters = stats["counters"]
-        print(counters)
+        print("[counters]", counters)
+        print("[concurrency]", concurrency)
         submitted = counters["submitted"]
         # 请求级错误：HTTP 失败 / stream 失败 / 超时。queue_seen 是容量信号，不算错误。
         n_err = counters["http_fail"] + counters["stream_error"] + counters["timeout"]
         error_rate = (n_err / submitted * 100) if submitted else 0
         print(
-            "error_rate={:.2f}% (http_fail+stream_error+timeout={}, submitted={})".format(
+            "[error_rate]={:.2f}% (http_fail+stream_error+timeout={}, submitted={})".format(
                 error_rate, n_err, submitted
             )
         )
-        print_time_percent("whole_latency", stats["latencies"])
-        print_time_percent("client_pending", stats["client_pending"])
-        print_time_percent("queue_wait", stats["queue_waits"])
+        print_time_percent("[whole_latency]", stats["latencies"])
+        print_time_percent("[header]", stats["header_latencies"])
+        print_time_percent("[upload]", stats["upload_seconds"])
+        print_time_percent("[queue_wait]", stats["queue_waits"])
         for stage, key in STAGE_TO_STAT.items():
-            print_time_percent(stage, stats[key])
+            print_time_percent(f"[{stage}]", stats[key])
 
 
 if __name__ == "__main__":

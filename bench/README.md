@@ -46,7 +46,7 @@ Content-Type: multipart/form-data
 
 - `max_inputs = 2`：单容器最多 2 条并发 HTTP
 - `min_containers = 0`：空闲会缩到 0，压测开头会有冷启动
-- 生产 Workflow 的 `CONCURRENT_IMAGES = 2`：每发一批 2 张，与 `--batch-size 2` 对齐
+- 生产 Workflow 的 `TRANSLATE_BATCH_SIZE = 4`：每发一批 4 张，与 `--batch-size 4` 对齐
 
 建议阶梯（每次只改 concurrency，图片和 config 固定）：
 
@@ -82,7 +82,7 @@ bench/
 
 ```bash
 python bench/loadtest_stream.py \
-  --url https://<user>--manga-translator-web.modal.run \
+  --remote \
   --images bench/fixtures \
   --config bench/configs/no_save.json \
   --concurrency 2 \
@@ -91,9 +91,12 @@ python bench/loadtest_stream.py \
   --timeout 180
 ```
 
+本地则把 `--remote` 换成 `--local`（`http://127.0.0.1:8000`）。`--local` / `--remote` 必须二选一。
+
 | 参数 | 含义 |
 |------|------|
-| `--url` | Modal 或本地 base URL，不要带 path |
+| `--local` | 打本地 `http://127.0.0.1:8000` |
+| `--remote` | 打 Modal `https://hankeyyh--manga-translator-web.modal.run` |
 | `--images` | 图片目录；按 `--batch-size` 切片，不足则循环复用 |
 | `--config` | 压测 config JSON |
 | `--concurrency` | 同时 in-flight 批次数（真正的压测旋钮） |
