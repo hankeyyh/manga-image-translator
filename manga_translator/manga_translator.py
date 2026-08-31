@@ -67,6 +67,23 @@ def encode_webp_bytes(image: Image.Image, quality: int = RESULT_WEBP_QUALITY) ->
     )
     return buf.getvalue()
 
+def _write_webp_file(image: Image.Image, dest: str) -> None:
+    _prepare_webp_image(image).save(
+        dest,
+        format='WEBP',
+        quality=RESULT_WEBP_QUALITY,
+        method=RESULT_WEBP_METHOD,
+    )
+
+def _upload_webp_bytes(webp_bytes: bytes, path: str, bucket: str) -> str:
+    return upload_file(
+        create_service_role_client(),
+        webp_bytes,
+        path,
+        bucket,
+        content_type='image/webp',
+    )
+
 # 全局console实例，用于日志重定向
 _global_console = None
 _log_console = None
@@ -441,6 +458,8 @@ class MangaTranslator:
         # translate
         ctx = await self._translate(config, ctx)
 
+        await self._apply_streaming_save(ctx, config)
+
         # 在翻译流程的最后保存翻译结果，确保保存的是最终结果（包括重试后的结果）
         # Save translation results at the end of translation process to ensure final results are saved
         if not skip_context_save and ctx.text_regions:
@@ -652,7 +671,6 @@ class MangaTranslator:
         # 把numpy结果数组，渲染到img pil画布上
         ctx.result = dump_image(ctx.input, ctx.img_rendered, ctx.img_alpha)
 
-        # 如果流式输出，把ctx.result保存为final.webp
         return await self._revert_upscale(config, ctx)
     
     # If `revert_upscaling` is True, revert to input size
@@ -667,73 +685,88 @@ class MangaTranslator:
             await self._report_progress('saving_debug')
             try:
                 final_path = self._result_path(RESULT_WEBP_FILENAME)
-                _prepare_webp_image(ctx.result).save(
-                    final_path,
-                    format='WEBP',
-                    quality=RESULT_WEBP_QUALITY,
-                    method=RESULT_WEBP_METHOD,
-                )
+                _write_webp_file(ctx.result, final_path)
             except Exception as e:
                 logger.error(f"Error saving final.webp debug image: {e}")
                 logger.debug(f"Exception details: {traceback.format_exc()}")
 
-        # Web流式模式优化：按 save_to 落盘（或跳过），再换成占位符
-        if ctx.result and not self.result_sub_folder and hasattr(self, '_is_streaming_mode') and self._is_streaming_mode:
-            if config.save.save_to == SavePlace.supabase_storage:
-                await self._report_progress('saving_result')
-                await self._save_streaming_result_to_supabase(ctx.result, config)
-            elif config.save.save_to == SavePlace.local:
-                await self._report_progress('saving_result')
-                await self._save_streaming_result_locally(ctx.result, config)
-            elif config.save.save_to == SavePlace.none:
-                await self._notify_image_completed(config, "none")
-
-            # 创建占位符结果并立即返回
-            placeholder = Image.new('RGB', (1, 1), color='white')
-            ctx.result = placeholder
-            ctx.use_placeholder = True
-            return ctx
-
         return ctx
+
+    def _is_streaming_save_enabled(self) -> bool:
+        return not self.result_sub_folder and getattr(self, '_is_streaming_mode', False)
+
+    def _streaming_image_context(self, ctx: Context):
+        return getattr(ctx, 'image_context', None) or self._current_image_context
+
+    async def _apply_streaming_save(self, ctx: Context, config: Config) -> None:
+        if not ctx.result or not self._is_streaming_save_enabled():
+            return
+        image_context = self._streaming_image_context(ctx)
+        result = ctx.result
+        if config.save.save_to == SavePlace.supabase_storage:
+            await self._report_progress('saving_result')
+            await self._save_streaming_result_to_supabase(result, config)
+        elif config.save.save_to == SavePlace.local:
+            await self._report_progress('saving_result')
+            await self._save_streaming_result_locally(result, config, image_context)
+        elif config.save.save_to == SavePlace.none:
+            await self._notify_image_completed(config, "none")
+        else:
+            return
+        ctx.result = Image.new('RGB', (1, 1), color='white')
+        ctx.use_placeholder = True
+
+    async def _save_streaming_results(self, items: List[tuple]) -> None:
+        pending = [(ctx, config) for ctx, config in items if getattr(ctx, 'result', None)]
+        if not pending or not self._is_streaming_save_enabled():
+            return
+        outcomes = await asyncio.gather(
+            *(self._apply_streaming_save(ctx, config) for ctx, config in pending),
+            return_exceptions=True,
+        )
+        for (ctx, config), outcome in zip(pending, outcomes):
+            if isinstance(outcome, Exception):
+                if config.save.save_to == SavePlace.supabase_storage:
+                    save_path = config.save.supabase_storage_path
+                elif config.save.save_to == SavePlace.local:
+                    save_path = self._result_path(RESULT_WEBP_FILENAME, self._streaming_image_context(ctx))
+                else:
+                    save_path = config.save.save_to
+                logger.error(f'Failed to save streaming result to {save_path}: {outcome}')
 
     async def _save_streaming_result_to_supabase(self, result: Image.Image, config: Config) -> None:
         try:
-            webp_bytes = encode_webp_bytes(result)
+            # encode_webp_bytes 是cpu密集的工作，coroutine帮不上忙，因此是普通function，需要单独的线程执行
+            webp_bytes = await asyncio.to_thread(encode_webp_bytes, result)
         except Exception as e:
             logger.error(f"Failed to encode final.webp: {e}")
             await self._notify_image_failed(config, 'failed to encode final.webp')
             raise RuntimeError("failed to encode final.webp") from e
-        supabase_client = create_service_role_client()
         try:
-            output_path = upload_file(
-                supabase_client,
+            # supabase上传也使用的同步sdk，无法用coroutine，需要用thread
+            output_path = await asyncio.to_thread(
+                _upload_webp_bytes,
                 webp_bytes,
                 config.save.supabase_storage_path,
                 config.save.supabase_storage_bucket,
-                content_type='image/webp',
             )
         except Exception as e:
             logger.error(f"Failed to upload result image to supabase storage: {e}")
             await self._notify_image_failed(config, f'Failed to upload result image to supabase storage: {e}')
             raise
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
-            await self._notify_image_completed(config, output_path)
+        await self._notify_image_completed(config, output_path)
 
-    async def _save_streaming_result_locally(self, result: Image.Image, config: Config) -> None:
+    async def _save_streaming_result_locally(self, result: Image.Image, config: Config, image_context: dict = None) -> None:
+        dest = self._result_path(RESULT_WEBP_FILENAME, image_context)
         try:
-            _prepare_webp_image(result).save(
-                self._result_path(RESULT_WEBP_FILENAME),
-                format='WEBP',
-                quality=RESULT_WEBP_QUALITY,
-                method=RESULT_WEBP_METHOD,
-            )
+            await asyncio.to_thread(_write_webp_file, result, dest)
         except Exception as e:
             logger.error(f"Failed to save final.webp locally: {e}")
             await self._notify_image_failed(config, 'failed to save final.webp locally')
             raise RuntimeError("failed to save final.webp locally") from e
-        if hasattr(self, '_progress_hooks') and self._current_image_context:
-            folder_name = self._current_image_context['subfolder']
-            await self._notify_image_completed(config, folder_name)
+        context = image_context if image_context is not None else self._current_image_context
+        if context:
+            await self._notify_image_completed(config, context['subfolder'])
 
     async def _run_colorizer(self, config: Config, ctx: Context):
         current_time = time.time()
@@ -1454,14 +1487,15 @@ class MangaTranslator:
                                               config.render.disable_font_border, config.render.fit_to_box)
         return output
 
-    def _result_path(self, path: str) -> str:
+    def _result_path(self, path: str, image_context: dict = None) -> str:
         """
         Returns path to result folder where intermediate images are saved when using verbose flag
         or web mode input/result images are cached.
         """
+        context = self._current_image_context if image_context is None else image_context
         # 只有在verbose模式下才使用图片级子文件夹
         if self.verbose:
-            image_subfolder = self._get_image_subfolder()
+            image_subfolder = context['subfolder'] if context else ''
             if image_subfolder:
                 if self.result_sub_folder:
                     result_path = os.path.join(BASE_PATH, 'result', self.result_sub_folder, image_subfolder, path)
@@ -1474,9 +1508,9 @@ class MangaTranslator:
         # 在server/web模式下（result_sub_folder为空）且为非verbose模式时
         # 需要创建一个子文件夹来保存final.webp
         if not self.result_sub_folder:
-            if self._current_image_context:
+            if context:
                 # 直接使用已生成的子文件夹名
-                sub_folder = self._current_image_context['subfolder']
+                sub_folder = context['subfolder']
             else:
                 # 没有上下文信息时使用默认值
                 timestamp = str(int(time.time() * 1000))
@@ -1558,7 +1592,7 @@ class MangaTranslator:
             logger.debug('Batch size <= 1, switching to individual processing mode')
             results = []
             for i, (image, config) in enumerate(images_with_configs):
-                ctx = await self.translate(image, config)  # 单页翻译时正常保存上下文
+                ctx = await self.translate(image, config)
                 results.append(ctx)
             return results
         
@@ -1568,8 +1602,6 @@ class MangaTranslator:
         memory_optimization_enabled = not self.disable_memory_optimization
         if not memory_optimization_enabled:
             logger.debug('Memory optimization disabled for batch translation')
-        
-        results = []
         
         # 处理所有图片到翻译之前的步骤
         logger.debug('Starting pre-processing phase...')
@@ -1660,7 +1692,7 @@ class MangaTranslator:
         
         if not pre_translation_contexts:
             logger.warning('No images pre-processed successfully')
-            return results
+            return []
             
         logger.debug(f'Pre-processing completed: {len(pre_translation_contexts)} images')
             
@@ -1709,6 +1741,7 @@ class MangaTranslator:
         
         # 完成翻译后的处理
         logger.debug('Starting post-processing phase...')
+        final_items: List[tuple] = []
         for i, (ctx, config) in enumerate(translated_contexts):
             try:
                 if ctx.text_regions:
@@ -1721,18 +1754,20 @@ class MangaTranslator:
                         # 如果恢复失败，作为fallback重新设置（理论上不应该发生）
                         logger.warning(f"Failed to restore image context for MD5 {image_md5}, creating new context")
                         self._set_image_context(config, image)
+                    if self._current_image_context:
+                        ctx.image_context = self._current_image_context.copy()
                     ctx = await self._complete_translation_pipeline(ctx, config)
-                results.append(ctx)
+                final_items.append((ctx, config))
                 logger.debug(f'Image {i+1} post-processing completed')
             except Exception as e:
                 logger.error(f'Image {i+1} post-processing error: {e}')
                 await self._notify_image_failed(config, f'Post-processing error: {e}')
-                results.append(ctx)
+                final_items.append((ctx, config))
         
-        logger.info(f'Batch translation completed: processed {len(results)} images')
+        logger.info(f'Batch translation completed: processed {len(final_items)} images')
 
         # 批处理完成后，保存所有页面的最终翻译结果
-        for ctx in results:
+        for ctx, _ in final_items:
             if ctx.text_regions:
                 # 汇总本页翻译，供下一页做上文
                 page_translations = {r.text_raw if hasattr(r, "text_raw") else r.text: r.translation
@@ -1746,8 +1781,9 @@ class MangaTranslator:
 
         # 清理批量处理的图片上下文缓存
         self._saved_image_contexts.clear()
-        
-        return results
+
+        await self._save_streaming_results(final_items)
+        return [ctx for ctx, _ in final_items]
 
     async def _translate_until_translation(self, image: Image.Image, config: Config) -> Context:
         """
