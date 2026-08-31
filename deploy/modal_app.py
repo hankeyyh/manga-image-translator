@@ -25,12 +25,10 @@ PROJECT_ROOT = DEPLOY_DIR.parent
 # Import configuration
 from modal_config import (
     APP_NAME,
-    IMAGE_NAME,
     MODEL_VOLUME_NAME,
     RESULT_VOLUME_NAME,
     MODEL_MOUNT_PATH,
     RESULT_MOUNT_PATH,
-    APP_ROOT_PATH,
     ENV_SECRET_NAME,
     GPU_CONFIG,
     BASE_IMAGE,
@@ -81,6 +79,7 @@ image = (
     .add_local_file(str(PROJECT_ROOT / "docker_prepare.py"), "/app/docker_prepare.py")
 )
 
+MAX_WORKER_COUNT = 8
 
 @app.function(
     image=image,
@@ -89,6 +88,7 @@ image = (
     memory=GPU_CONFIG["memory"],
     timeout=GPU_CONFIG["timeout"],
     min_containers=GPU_CONFIG["min_containers"],
+    # max_containers=GPU_CONFIG.get("max_containers"),
     scaledown_window=GPU_CONFIG.get("scaledown_window", 300),
     volumes={
         MODEL_MOUNT_PATH: model_volume,
@@ -135,22 +135,21 @@ def web():
     worker_base_port = 5004
     # Extra workers on a single GPU mainly contend on import and slow cold start.
     # Live secret may still have MT_WORKER_COUNT=8; cap here.
-    worker_count_cap = 2
-    raw_worker_count = os.getenv("MT_WORKER_COUNT", "2")
+    raw_worker_count = os.getenv("MT_WORKER_COUNT", "1")
     try:
         worker_count = int(str(raw_worker_count).strip())
     except (TypeError, ValueError):
         print(f"Invalid MT_WORKER_COUNT={raw_worker_count!r}, falling back to 2")
-        worker_count = 2
+        worker_count = 1
     if worker_count < 1:
         print(f"MT_WORKER_COUNT={worker_count} < 1, falling back to 2")
-        worker_count = 2
-    if worker_count > worker_count_cap:
+        worker_count = 1
+    if worker_count > MAX_WORKER_COUNT:
         print(
-            f"MT_WORKER_COUNT={worker_count} capped to {worker_count_cap} "
+            f"MT_WORKER_COUNT={worker_count} capped to {MAX_WORKER_COUNT} "
             "to reduce cold start on a single GPU"
         )
-        worker_count = worker_count_cap
+        worker_count = MAX_WORKER_COUNT
     worker_ports = [worker_base_port + i for i in range(worker_count)]
     worker_processes = []
 
