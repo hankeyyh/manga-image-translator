@@ -140,7 +140,7 @@ def compact_special_symbols(text: str) -> str:
     pattern = r'([^\w\s])[ \u3000]+'  
     text = re.sub(pattern, r'\1', text) 
     return text
-    
+
 def rotate_image(image, angle):
     if angle == 0:
         return image, (0, 0)
@@ -250,6 +250,8 @@ FONT_NAME_PATH_MAP = {
 
 FONT_SELECTION: List[freetype.Face] = []
 font_cache = {}
+_active_font_path = None
+
 def get_cached_font(path: str) -> freetype.Face:
     path = path.replace('\\', '/')
     if not font_cache.get(path):
@@ -259,12 +261,16 @@ def get_cached_font(path: str) -> freetype.Face:
     return font_cache[path]
 
 def set_font(font_path: str):
-    global FONT_SELECTION
+    global FONT_SELECTION, _active_font_path
+    primary = font_path.replace('\\', '/') if font_path else ''
     if font_path:
         selection = [font_path] + FALLBACK_FONTS
     else:
         selection = FALLBACK_FONTS
     FONT_SELECTION = [get_cached_font(p) for p in selection]
+    if primary != _active_font_path:
+        get_char_glyph.cache_clear()
+        _active_font_path = primary
 
 def get_font_path(font_name: str):
     rel_path = FONT_NAME_PATH_MAP.get(font_name) if font_name else None
@@ -295,6 +301,10 @@ class Glyph:
         self.metrics.horiAdvance = glyph.metrics.horiAdvance
         self.metrics.vertAdvance = glyph.metrics.vertAdvance
 
+# 使用缓存，避免在翻译一页漫画时，高频字需要反复栅格化：排版测量，二分找字号，实际画上去。
+# 缓存后，之后遇到相同字，能直接复用bitmap
+# 问题：worker是常驻进程，后一个任务如果更换字体，缓存无法识别到。仍会用缓存字体渲染的bitmap
+# set_font 是 FONT_SELECTION 唯一写入口，dispatch_render 固定会调，需要在其中清除缓存
 @functools.lru_cache(maxsize = 1024, typed = True)
 def get_char_glyph(cdpt: str, font_size: int, direction: int) -> Glyph:
     global FONT_SELECTION
@@ -308,7 +318,7 @@ def get_char_glyph(cdpt: str, font_size: int, direction: int) -> Glyph:
         face.load_char(cdpt)
         return Glyph(face.glyph)
 
-#@functools.lru_cache(maxsize = 1024, typed = True)
+# @functools.lru_cache(maxsize = 1024, typed = True)
 def get_char_border(cdpt: str, font_size: int, direction: int):
     global FONT_SELECTION
     for i, face in enumerate(FONT_SELECTION):
