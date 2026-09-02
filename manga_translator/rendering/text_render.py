@@ -245,6 +245,7 @@ FONT_NAME_PATH_MAP = {
     'Playpen Sans Thai': 'fonts/PlaypenSansThai-VariableFont_wght.ttf',
     'Noto Sans Arabic': 'fonts/NotoSansArabic-VariableFont_wdth,wght.ttf',
     'QTS Manga': 'fonts/QTSManga-Regular.ttf',
+    'Microsoft YaHei': 'fonts/msyh.ttc',
 }
 
 FONT_SELECTION: List[freetype.Face] = []
