@@ -208,17 +208,43 @@ def add_color(bw_char_map, color, stroke_char_map, stroke_color):
     return bg#, alpha_char_map
 
 FALLBACK_FONTS = [
-    os.path.join(BASE_PATH, 'fonts/Arial-Unicode-Regular.ttf'),
     os.path.join(BASE_PATH, 'fonts/msyh.ttc'),
     os.path.join(BASE_PATH, 'fonts/msgothic.ttc'),
 ]
 
+# Keys must match frontend FONT_CONFIG.fonts[].renderName
 FONT_NAME_PATH_MAP = {
-    'Auto': 'fonts/anime_ace.ttf',
-    'Anime Ace': 'fonts/anime_ace.ttf',
+    'Auto': 'fonts/anime_ace_3.ttf',
     'Anime Ace 3.0': 'fonts/anime_ace_3.ttf',
-    'Arial Unicode Regular': 'fonts/Arial-Unicode-Regular.ttf',
     'Comic Shanns 2': 'fonts/comic shanns 2.ttf',
+    'Comic Marker Deluxe': 'fonts/Comic Marker Deluxe.ttf',
+    'Bangers': 'fonts/Bangers-Regular.ttf',
+    'Komika Slim': 'fonts/KOMIKASL.ttf',
+    'Caveat': 'fonts/Caveat-VariableFont_wght.ttf',
+    'Noto Sans': 'fonts/NotoSans-VariableFont_wdth,wght.ttf',
+    'Inter': 'fonts/Inter-VariableFont_opsz,wght.ttf',
+    'Noto Sans SC': 'fonts/NotoSansSC-VariableFont_wght.ttf',
+    'ZCOOL KuaiLe': 'fonts/ZCOOLKuaiLe-Regular.ttf',
+    'Long Cang': 'fonts/LongCang-Regular.ttf',
+    'Ma Shan Zheng': 'fonts/MaShanZheng-Regular.ttf',
+    'Noto Sans JP': 'fonts/NotoSansJP-VariableFont_wght.ttf',
+    'GenEi LateGo N': 'fonts/GenEiLateGoN_v2.ttf',
+    'GenEi Antique': 'fonts/Genei-Antique.ttf',
+    'M PLUS Rounded 1c': 'fonts/MPLUSRounded1c-Regular.ttf',
+    'Zen Kurenaido': 'fonts/ZenKurenaido-Regular.ttf',
+    'Noto Sans KR': 'fonts/NotoSansKR-VariableFont_wght.ttf',
+    'KOMACON': 'fonts/KOMACON.ttf',
+    'Gowun Dodum': 'fonts/GowunDodum-Regular.ttf',
+    'Nanum Pen Script': 'fonts/NanumPenScript-Regular.ttf',
+    'Noto Sans TC': 'fonts/NotoSansTC-VariableFont_wght.ttf',
+    'LXGW WenKai TC': 'fonts/LXGWWenKaiTC-Regular.ttf',
+    'Noto Sans Thai': 'fonts/NotoSansThai-VariableFont_wdth,wght.ttf',
+    'Charmonman': 'fonts/Charmonman-Regular.ttf',
+    'Itim': 'fonts/Itim-Regular.ttf',
+    'Krub': 'fonts/Krub-Regular.ttf',
+    'Playpen Sans Thai': 'fonts/PlaypenSansThai-VariableFont_wght.ttf',
+    'Noto Sans Arabic': 'fonts/NotoSansArabic-VariableFont_wdth,wght.ttf',
+    'QTS Manga': 'fonts/QTSManga-Regular.ttf',
 }
 
 FONT_SELECTION: List[freetype.Face] = []
