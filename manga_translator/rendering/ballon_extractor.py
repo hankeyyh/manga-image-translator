@@ -1,4 +1,5 @@
 import cv2
+import os
 from typing import Tuple, List
 import numpy as np
 
@@ -28,8 +29,7 @@ def enlarge_window(rect, im_w, im_h, ratio=2.5, aspect_ratio=1.0) -> List:
     rect[1::2] = np.clip(rect[1::2], 0, im_h - 1)
     return rect.tolist()
 
-def extract_ballon_region(img: np.ndarray, ballon_rect: List, enlarge_ratio=1, verbose=False) -> Tuple[np.ndarray, int, List]:
-
+def extract_ballon_region(img: np.ndarray, ballon_rect: List, enlarge_ratio=1, verbose=True) -> Tuple[np.ndarray, int, List]:
     x1, y1, x2, y2 = ballon_rect[0], ballon_rect[1], ballon_rect[2] + ballon_rect[0], ballon_rect[3] + ballon_rect[1]
     if enlarge_ratio > 1:
         x1, y1, x2, y2 = enlarge_window([x1, y1, x2, y2], img.shape[1], img.shape[0], enlarge_ratio, aspect_ratio=ballon_rect[3] / ballon_rect[2])
@@ -96,8 +96,11 @@ def extract_ballon_region(img: np.ndarray, ballon_rect: List, enlarge_ratio=1, v
         ballon_mask = cv2.resize(ballon_mask, (oriw, orih))
 
     if verbose:
-        cv2.imshow('ballon_mask', ballon_mask)
-        cv2.imshow('img', img)
-        cv2.waitKey(0)
+        debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'result', 'ballon_debug')
+        os.makedirs(debug_dir, exist_ok=True)
+        stem = f'{x1}_{y1}_{x2}_{y2}'
+        cv2.imwrite(os.path.join(debug_dir, f'ballon_mask_{stem}.png'), ballon_mask)
+        img_to_save = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 else img
+        cv2.imwrite(os.path.join(debug_dir, f'img_{stem}.png'), img_to_save)
 
     return ballon_mask, [x1, y1, x2, y2]

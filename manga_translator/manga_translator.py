@@ -2630,6 +2630,7 @@ class MangaTranslator:
             return await self._revert_upscale(config, ctx)
 
         # -- Mask refinement
+        # 把detection阶段输出的粗掩码，结合 OCR 文字框和图像颜色，精修成「只覆盖文字、边界准确、略作膨胀」的 inpainting 掩码
         if ctx.mask is None:
             await self._report_progress('mask-generation')
             try:
