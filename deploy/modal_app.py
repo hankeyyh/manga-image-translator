@@ -168,6 +168,7 @@ def web():
             '--use-gpu',
             '--ignore-errors',
             '--notify-progress-fail',
+            '--verbose',
         ]
 
     def terminate_workers():

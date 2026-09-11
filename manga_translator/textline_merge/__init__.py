@@ -108,6 +108,19 @@ def split_text_region(
 #     return box
 
 def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
+    """
+    将邻近的文本行框合并为文本区域（只看几何，不看 OCR 文字）。
+
+    成对连边（quadrilateral_can_merge_region）需同时满足：
+    - 多边形间距 <= 2 * 较小字号
+    - 字号比 <= 2
+    - 不把明显横排框和明显竖排框混在一起
+    - 两边都轴对齐：间距 < 1 * 字号，且横排左右缘对齐 / 竖排上下缘对齐
+    - 否则：角度差 < 15°，间距 <= 3 * 字号，字号相对差 <= 25%
+
+    连通分量再经 split_text_region 按间距是否均匀切开
+    （2 框：过远或角度不一致；3+ 框：MST 最长边是离群点则拆）。
+    """
     # step 0: merge quadrilaterals that belong to the same textline
     # u = 0
     # removed_counter = 0

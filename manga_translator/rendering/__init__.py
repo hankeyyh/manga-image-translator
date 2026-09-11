@@ -340,6 +340,7 @@ async def dispatch(
     line_spacing: int = None,
     disable_font_border: bool = False,
     fit_to_box: bool = True,
+    verbose: bool = False,
     ) -> np.ndarray:
 
     if font_path:
@@ -522,7 +523,7 @@ def render(
     img[y:y+h, x:x+w] = np.clip((img[y:y+h, x:x+w].astype(np.float32) * (1 - mask_region) + canvas_region.astype(np.float32) * mask_region), 0, 255).astype(np.uint8)
     return img
 
-async def dispatch_eng_render(img_canvas: np.ndarray, original_img: np.ndarray, text_regions: List[TextBlock], font_path: str = '', font_name: str = '', line_spacing: int = 0, disable_font_border: bool = False) -> np.ndarray:
+async def dispatch_eng_render(img_canvas: np.ndarray, original_img: np.ndarray, text_regions: List[TextBlock], font_path: str = '', font_name: str = '', line_spacing: int = 0, disable_font_border: bool = False, verbose: bool = False) -> np.ndarray:
     if len(text_regions) == 0:
         return img_canvas
 
@@ -536,9 +537,9 @@ async def dispatch_eng_render(img_canvas: np.ndarray, original_img: np.ndarray, 
         font_path = default_font_path
         text_render.set_font(font_path)
 
-    return render_textblock_list_eng(img_canvas, text_regions, line_spacing=line_spacing, size_tol=1.2, original_img=original_img, downscale_constraint=0.8,disable_font_border=disable_font_border)
+    return render_textblock_list_eng(img_canvas, text_regions, line_spacing=line_spacing, size_tol=1.2, original_img=original_img, downscale_constraint=0.8, disable_font_border=disable_font_border, verbose=verbose)
 
-async def dispatch_eng_render_pillow(img_canvas: np.ndarray, original_img: np.ndarray, text_regions: List[TextBlock], font_path: str = '', font_name: str = '', line_spacing: int = 0, disable_font_border: bool = False) -> np.ndarray:
+async def dispatch_eng_render_pillow(img_canvas: np.ndarray, original_img: np.ndarray, text_regions: List[TextBlock], font_path: str = '', font_name: str = '', line_spacing: int = 0, disable_font_border: bool = False, verbose: bool = False) -> np.ndarray:
     if len(text_regions) == 0:
         return img_canvas
 
@@ -552,4 +553,4 @@ async def dispatch_eng_render_pillow(img_canvas: np.ndarray, original_img: np.nd
         font_path = default_font_path
         text_render.set_font(font_path)
 
-    return render_textblock_list_eng_pillow(font_path, img_canvas, text_regions, original_img=original_img, downscale_constraint=0.95)
+    return render_textblock_list_eng_pillow(font_path, img_canvas, text_regions, original_img=original_img, downscale_constraint=0.95, verbose=verbose)

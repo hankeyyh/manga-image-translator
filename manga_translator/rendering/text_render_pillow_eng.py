@@ -114,7 +114,8 @@ def render_textblock_list_eng(
     downscale_constraint: float = 0.7,
     original_img: np.ndarray = None,
     max_font_size: int = 300,
-    bounds_padding: int = 3
+    bounds_padding: int = 3,
+    verbose: bool = False,
 ) -> np.ndarray:
     """Render text blocks onto image"""
 
@@ -144,7 +145,7 @@ def render_textblock_list_eng(
 
     for region in text_regions:
         font_size = min(region.font_size, max_font_size)
-        ballon_mask, xyxy = extract_ballon_region(original_img, region.xywh, enlarge_ratio=getattr(region, 'enlarge_ratio', 1))
+        ballon_mask, xyxy = extract_ballon_region(original_img, region.xywh, enlarge_ratio=getattr(region, 'enlarge_ratio', 1), verbose=verbose)
         if isinstance(xyxy, tuple):
             xyxy = list(xyxy)
         font = ImageFont.truetype(font_path, font_size)
