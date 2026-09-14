@@ -42,7 +42,7 @@ from .translators import (
 )
 from .translators.common import ISO_639_1_TO_VALID_LANGUAGES
 from .colorization import dispatch as dispatch_colorization, prepare as prepare_colorization, unload as unload_colorization
-from .rendering import dispatch as dispatch_rendering, dispatch_eng_render, dispatch_eng_render_pillow
+from .rendering import dispatch as dispatch_rendering, dispatch_eng_render, dispatch_eng_render_pillow, dispatch_reflow
 from .utils.supabase import create_service_role_client, upload_file
 
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
@@ -1469,12 +1469,27 @@ class MangaTranslator:
         self._model_usage_timestamps[("rendering", config.render.renderer)] = current_time
         if config.render.renderer == Renderer.none:
             output = ctx.img_inpainted
-        # manga2eng currently only supports horizontal left to right rendering
+        # manga2eng / reflow currently only support horizontal left to right rendering
         elif (config.render.renderer == Renderer.manga2Eng or config.render.renderer == Renderer.manga2EngPillow) and ctx.text_regions and LANGUAGE_ORIENTATION_PRESETS.get(ctx.text_regions[0].target_lang) == 'h':
             if config.render.renderer == Renderer.manga2EngPillow:
                 output = await dispatch_eng_render_pillow(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.font_name, config.render.line_spacing)
             else:
                 output = await dispatch_eng_render(ctx.img_inpainted, ctx.img_rgb, ctx.text_regions, self.font_path, config.render.font_name, config.render.line_spacing)
+        elif config.render.renderer == Renderer.reflow and ctx.text_regions and LANGUAGE_ORIENTATION_PRESETS.get(ctx.text_regions[0].target_lang) == 'h':
+            output = await dispatch_reflow(
+                ctx.img_inpainted,
+                ctx.img_rgb,
+                ctx.text_regions,
+                self.font_path,
+                config.render.font_name,
+                config.render.line_spacing,
+                config.render.disable_font_border,
+                config.render.font_size,
+                config.render.font_size_offset,
+                config.render.font_size_minimum,
+                not config.render.no_hyphenation,
+                config.render.rtl,
+            )
         else:
             output = await dispatch_rendering(ctx.img_inpainted, ctx.text_regions, self.font_path, config.render.font_name, config.render.font_size,
                                               config.render.font_size_offset,
@@ -1761,7 +1776,7 @@ class MangaTranslator:
 
         logger.info(f'Batch translation completed: processed {len(final_items)} images')
 
-        # 批处理完成后，保存所有页面的最终翻译结果
+        # 批处理完成后，保存所有页面的最终翻译结果。TODO 异步并发保存，要等待所有图片走完之前的流程，前端体验延迟大
         for ctx, _ in final_items:
             if ctx.text_regions:
                 # 汇总本页翻译，供下一页做上文
