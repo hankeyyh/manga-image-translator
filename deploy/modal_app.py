@@ -250,7 +250,6 @@ def web():
         use_gpu_limited=False,
         ignore_errors=True,
         notify_progress_fail=True,
-        verbose=True,
         models_ttl=None,
         pre_dict=None,
         post_dict=None,
