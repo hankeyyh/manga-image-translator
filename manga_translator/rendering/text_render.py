@@ -214,12 +214,8 @@ FALLBACK_FONTS = [
 
 # Keys must match frontend FONT_CONFIG.fonts[].renderName
 FONT_NAME_PATH_MAP = {
-    'Auto': 'fonts/anime_ace_3.ttf',
-    'anime-ace-3': 'fonts/anime_ace_3.ttf',
-    'comic-shanns-2': 'fonts/comic shanns 2.ttf',
-    'comic-marker-deluxe': 'fonts/Comic Marker Deluxe.ttf',
+    'Auto': 'fonts/NotoSans-VariableFont_wdth,wght.ttf',
     'bangers': 'fonts/Bangers-Regular.ttf',
-    'komika-slim': 'fonts/KOMIKASL.ttf',
     'cc-wild-words': 'fonts/CC Wild Words Regular.ttf',
     'caveat': 'fonts/Caveat-VariableFont_wght.ttf',
     'noto-sans': 'fonts/NotoSans-VariableFont_wdth,wght.ttf',
@@ -246,7 +242,6 @@ FONT_NAME_PATH_MAP = {
     'playpen-sans-thai': 'fonts/PlaypenSansThai-VariableFont_wght.ttf',
     'noto-sans-arabic': 'fonts/NotoSansArabic-VariableFont_wdth,wght.ttf',
     'qts-manga': 'fonts/QTSManga-Regular.ttf',
-    'msyh': 'fonts/msyh.ttc',
 }
 
 FONT_SELECTION: List[freetype.Face] = []
